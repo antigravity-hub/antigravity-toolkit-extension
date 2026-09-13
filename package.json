@@ -1,0 +1,155 @@
+{
+  "name": "antigravity-toolkit",
+  "displayName": "Antigravity Toolkit",
+  "description": "The all-in-one IDE toolkit for Antigravity: visual conversation history, quota analytics, and instant live account switching.",
+  "version": "1.0.0",
+  "publisher": "antigravity-hub",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/antigravity-hub/antigravity-toolkit-extension"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Productivity",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "antigravity",
+    "gemini",
+    "account-switcher",
+    "conversation-history",
+    "token-monitor",
+    "cursor"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "antigravity-toolkit-sidebar",
+          "title": "Antigravity Toolkit",
+          "icon": "$(rocket)"
+        }
+      ]
+    },
+    "views": {
+      "antigravity-toolkit-sidebar": [
+        {
+          "id": "antigravity.views.accounts",
+          "name": "Accounts & Sessions"
+        },
+        {
+          "id": "antigravity.views.conversations",
+          "name": "Conversation History"
+        },
+        {
+          "type": "webview",
+          "id": "antigravity.views.quota",
+          "name": "Live Quota Dashboard"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "antigravityToolkit.refreshAll",
+        "title": "Refresh All",
+        "category": "Antigravity Toolkit",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "antigravityToolkit.switchAccount",
+        "title": "Switch Account",
+        "category": "Antigravity Toolkit",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "antigravityToolkit.addAccount",
+        "title": "Add Account",
+        "category": "Antigravity Toolkit",
+        "icon": "$(add)"
+      },
+      {
+        "command": "antigravityToolkit.syncWithShield",
+        "title": "Sync with Antigravity Shield",
+        "category": "Antigravity Toolkit",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "antigravityToolkit.openConversation",
+        "title": "Open Conversation Transcript",
+        "category": "Antigravity Toolkit"
+      },
+      {
+        "command": "antigravityToolkit.openQuotaDashboard",
+        "title": "Open Full Quota Dashboard",
+        "category": "Antigravity Toolkit",
+        "icon": "$(dashboard)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "antigravityToolkit.refreshAll",
+          "when": "view =~ /^antigravity\\.views\\./",
+          "group": "navigation"
+        },
+        {
+          "command": "antigravityToolkit.syncWithShield",
+          "when": "view == antigravity.views.accounts",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "antigravityToolkit.switchAccount",
+          "when": "view == antigravity.views.accounts && viewItem == accountItem",
+          "group": "inline"
+        },
+        {
+          "command": "antigravityToolkit.openConversation",
+          "when": "view == antigravity.views.conversations && viewItem == conversationItem",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Antigravity Toolkit",
+      "properties": {
+        "antigravityToolkit.shieldApiUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8765",
+          "description": "Local Antigravity Shield API base URL."
+        },
+        "antigravityToolkit.quotaRefreshIntervalSeconds": {
+          "type": "number",
+          "default": 60,
+          "description": "Interval in seconds to automatically poll and update quotas."
+        },
+        "antigravityToolkit.showStatusBarBadge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the active account and quota indicator in the IDE status bar."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "npm run build && vsce package --no-dependencies",
+    "compile": "tsc -p ./ --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^2.30.0",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.5.0"
+  }
+}
