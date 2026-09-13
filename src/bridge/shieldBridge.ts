@@ -123,4 +123,47 @@ export class ShieldBridge {
       }
     });
   }
+
+  /**
+   * Proactively announces Toolkit availability to Shield via heartbeat.
+   */
+  public async sendHeartbeat(activeEmail?: string): Promise<boolean> {
+    const payload = JSON.stringify({
+      ide: vscode.env.appName || 'Antigravity IDE',
+      version: '1.0.0',
+      active_email: activeEmail || null,
+    });
+
+    const ports = [8765, 19527];
+    for (const port of ports) {
+      try {
+        const url = new URL(`http://127.0.0.1:${port}/toolkit/heartbeat`);
+        const ok = await new Promise<boolean>((resolve) => {
+          const req = http.request(
+            url,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload),
+              },
+              timeout: 1000,
+            },
+            (res) => resolve(res.statusCode === 200 || res.statusCode === 204)
+          );
+          req.on('error', () => resolve(false));
+          req.on('timeout', () => {
+            req.destroy();
+            resolve(false);
+          });
+          req.write(payload);
+          req.end();
+        });
+        if (ok) return true;
+      } catch {
+        // try next port
+      }
+    }
+    return false;
+  }
 }

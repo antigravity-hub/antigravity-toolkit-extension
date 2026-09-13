@@ -7,8 +7,10 @@ import { HistoryTreeProvider } from './providers/historyTreeProvider';
 import { QuotaWebviewProvider } from './providers/quotaWebviewProvider';
 import { StatusBarManager } from './ui/statusBar';
 import { ConversationSession } from './types';
+import { ShieldBridge } from './bridge/shieldBridge';
 
 let quotaIntervalTimer: NodeJS.Timeout | undefined;
+let heartbeatTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('[Antigravity Toolkit] Activating extension...');
@@ -160,7 +162,16 @@ export function activate(context: vscode.ExtensionContext) {
     }, intervalSeconds * 1000);
   }
 
-  // 6. Proactive Background Probe to Shield
+  // 6. Proactive Heartbeat & Background Sync to Shield
+  const shieldBridge = ShieldBridge.getInstance();
+  const sendHb = () => {
+    const active = accountService.getActiveAccount();
+    shieldBridge.sendHeartbeat(active?.email).catch(() => {});
+  };
+
+  sendHb();
+  heartbeatTimer = setInterval(sendHb, 20000);
+
   setTimeout(() => {
     accountService.syncFromShield().catch(() => {});
   }, 2000);
@@ -171,5 +182,8 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
   if (quotaIntervalTimer) {
     clearInterval(quotaIntervalTimer);
+  }
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
   }
 }
