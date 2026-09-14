@@ -42,10 +42,103 @@ export class ConversationService {
   }
 
   /**
+   * Discovers all real project/workspace folder names from IDE storage and active workspace.
+   */
+  private getKnownWorkspaceNames(): string[] {
+    const known = new Set<string>();
+    const ignored = new Set([
+      'appdata', 'desktop', 'public', 'users', 'references', 'bot codes', 'v4',
+      'programs', 'antigravity', 'gro', 'site data', 'site', 'scratch', 'logs',
+      'tasks', 'brain', 'system_generated'
+    ]);
+
+    // 1. Current workspace folders in VS Code / Antigravity IDE
+    if (vscode.workspace.workspaceFolders) {
+      for (const folder of vscode.workspace.workspaceFolders) {
+        if (folder.name && !ignored.has(folder.name.toLowerCase())) {
+          known.add(folder.name);
+        }
+      }
+    }
+
+    // 2. Discover from IDE workspaceStorage (Antigravity IDE, Cursor, Code)
+    const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
+    if (appData) {
+      const storageRoots = [
+        path.join(appData, 'Antigravity IDE', 'User', 'workspaceStorage'),
+        path.join(appData, 'Cursor', 'User', 'workspaceStorage'),
+        path.join(appData, 'Code', 'User', 'workspaceStorage'),
+      ];
+
+      for (const root of storageRoots) {
+        if (!fs.existsSync(root)) continue;
+        try {
+          const dirs = fs.readdirSync(root, { withFileTypes: true });
+          for (const d of dirs) {
+            if (!d.isDirectory()) continue;
+            const wsJsonPath = path.join(root, d.name, 'workspace.json');
+            if (fs.existsSync(wsJsonPath)) {
+              try {
+                const data = JSON.parse(fs.readFileSync(wsJsonPath, 'utf8'));
+                const folderUrl: string = data.folder || '';
+                if (folderUrl) {
+                  const unquoted = decodeURIComponent(folderUrl);
+                  const clean = unquoted.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
+                  const bName = path.basename(path.normalize(clean));
+                  if (bName && bName.length > 2 && !ignored.has(bName.toLowerCase())) {
+                    known.add(bName);
+                  }
+                }
+              } catch {
+                // ignore
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // 3. Fallback well-known core projects
+    const fallbackProjects = [
+      'Antigravity-Manager-Guidance',
+      'antigravity-toolkit-extension',
+      'Guidegram',
+      'FastStars',
+      'modern-faststars-site',
+      'DoctorGuidance',
+      'keshiko',
+      'medflip',
+      'memsys',
+      'v2rayGuardBot',
+      'v2rayGuard',
+      'betwithton',
+      'mentogether',
+      'drguidance_manager',
+      'Calibion-Orderer',
+      'roohchat',
+      'nabz-e-danesh',
+      'drugs-repo',
+      'synapse',
+      'hospital-codes',
+      'trade agent',
+      'atrclick',
+    ];
+    for (const p of fallbackProjects) {
+      known.add(p);
+    }
+
+    // Sort by length descending so longer specific names match first
+    return Array.from(known).sort((a, b) => b.length - a.length);
+  }
+
+  /**
    * Scans and returns all discovered conversations sorted by latest activity.
    */
   public async getConversations(): Promise<ConversationSession[]> {
     const brainDirs = this.getBrainDirectories();
+    const knownWorkspaces = this.getKnownWorkspaceNames();
     const sessions: ConversationSession[] = [];
     const seenIds = new Set<string>();
 
@@ -94,28 +187,21 @@ export class ConversationService {
             stepCount = lines.length;
             tokenEstimate = Math.round(content.length / 3.8);
 
-            // Extract project name & first clean user input as title / preview
-            for (const line of lines.slice(0, 30)) {
+            // Accurate matching: match against real known workspaces in transcript content
+            const sampleContent = content.slice(0, 120000);
+            const sampleLower = sampleContent.toLowerCase();
+
+            for (const kw of knownWorkspaces) {
+              if (sampleLower.includes(kw.toLowerCase())) {
+                projectName = kw;
+                break;
+              }
+            }
+
+            // Extract first clean user input as title / preview
+            for (const line of lines.slice(0, 40)) {
               try {
                 const obj = JSON.parse(line);
-                const str = JSON.stringify(obj);
-
-                // Extract project name from workspace mapping or paths
-                if (!projectName) {
-                  const corpusMatch = str.match(/->\s*([a-zA-Z0-9_\-\.\/]+)/);
-                  if (corpusMatch && corpusMatch[1] && !corpusMatch[1].includes('{') && !corpusMatch[1].includes('[')) {
-                    projectName = path.basename(corpusMatch[1]);
-                  } else {
-                    const pathMatch = str.match(/([a-zA-Z]:\\[^"'\n\r\t]+)/);
-                    if (pathMatch && pathMatch[1]) {
-                      const cleanPath = pathMatch[1].replace(/\\+$/, '');
-                      const bName = path.basename(cleanPath);
-                      if (bName && !['brain', 'logs', 'tasks', 'AppData', 'Users', 'Programs', 'system_generated', 'scratch'].includes(bName)) {
-                        projectName = bName;
-                      }
-                    }
-                  }
-                }
 
                 if (obj.type === 'USER_INPUT' && obj.content && !previewText) {
                   let cleaned = String(obj.content)
