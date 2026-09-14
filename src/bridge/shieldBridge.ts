@@ -347,6 +347,8 @@ export class ShieldBridge {
     const body = JSON.stringify(payload);
 
     const endpoints = [
+      '/api/toolkit/sync-active',
+      '/toolkit/sync-active',
       '/api/accounts/switch',
       '/accounts/switch',
       '/api/toolkit/switch',
