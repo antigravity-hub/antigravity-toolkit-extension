@@ -260,9 +260,8 @@ export class ShieldBridge {
           }
         }
 
-        const isActive =
-          acc.id === activeAccountId ||
-          (activeEmailFromGemini !== null && acc.email.toLowerCase() === activeEmailFromGemini.toLowerCase());
+        // Prioritize active IDE account from Shield
+        const isActive = Boolean(activeAccountId && acc.id === activeAccountId);
 
         result.push({
           id: acc.id,

@@ -24,6 +24,7 @@ export class ConversationService {
   private getBrainDirectories(): string[] {
     const homeDir = os.homedir();
     const dirs: string[] = [
+      path.join(homeDir, '.gemini', 'antigravity', 'brain'),
       path.join(homeDir, '.gemini', 'antigravity-ide', 'brain'),
       path.join(homeDir, '.gemini', 'brain'),
     ];
@@ -32,6 +33,7 @@ export class ConversationService {
     if (vscode.workspace.workspaceFolders) {
       for (const folder of vscode.workspace.workspaceFolders) {
         dirs.push(path.join(folder.uri.fsPath, '.gemini', 'brain'));
+        dirs.push(path.join(folder.uri.fsPath, '.gemini', 'antigravity', 'brain'));
         dirs.push(path.join(folder.uri.fsPath, '.gemini', 'antigravity-ide', 'brain'));
       }
     }
@@ -45,13 +47,15 @@ export class ConversationService {
   public async getConversations(): Promise<ConversationSession[]> {
     const brainDirs = this.getBrainDirectories();
     const sessions: ConversationSession[] = [];
+    const seenIds = new Set<string>();
 
     for (const brainDir of brainDirs) {
       try {
         const entries = fs.readdirSync(brainDir, { withFileTypes: true });
         for (const entry of entries) {
           if (!entry.isDirectory()) continue;
-          if (entry.name.startsWith('.')) continue;
+          if (entry.name.startsWith('.') || entry.name.toLowerCase().includes('tempmedia')) continue;
+          if (seenIds.has(entry.name)) continue;
 
           const convId = entry.name;
           const sessionDir = path.join(brainDir, convId);
@@ -65,64 +69,77 @@ export class ConversationService {
             ? transcriptFull
             : '';
 
+          // Only treat as real session if transcript exists
+          if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+            continue;
+          }
+
           let stepCount = 0;
           let previewText = '';
           let mtime = 0;
 
           try {
-            const stat = fs.statSync(sessionDir);
+            const stat = fs.statSync(transcriptPath);
             mtime = stat.mtimeMs;
           } catch {
             mtime = Date.now();
           }
 
-          let projectName = 'Main Project';
+          let projectName = '';
           let tokenEstimate = 0;
 
-          if (transcriptPath && fs.existsSync(transcriptPath)) {
-            try {
-              const content = fs.readFileSync(transcriptPath, 'utf8');
-              const lines = content.split('\n').filter((l) => l.trim().length > 0);
-              stepCount = lines.length;
-              tokenEstimate = Math.round(content.length / 3.8);
+          try {
+            const content = fs.readFileSync(transcriptPath, 'utf8');
+            const lines = content.split('\n').filter((l) => l.trim().length > 0);
+            stepCount = lines.length;
+            tokenEstimate = Math.round(content.length / 3.8);
 
-              // Extract project name & first clean user input as title / preview
-              for (const line of lines.slice(0, 15)) {
-                try {
-                  const obj = JSON.parse(line);
-                  const str = JSON.stringify(obj);
+            // Extract project name & first clean user input as title / preview
+            for (const line of lines.slice(0, 30)) {
+              try {
+                const obj = JSON.parse(line);
+                const str = JSON.stringify(obj);
 
-                  // Extract project name from workspace paths
-                  if (!projectName || projectName === 'Main Project') {
-                    const match = str.match(/([a-zA-Z0-9_\-\.\+]+) -> [a-zA-Z0-9_\-\.\+\/]+/);
-                    if (match && match[1]) {
-                      projectName = path.basename(match[1]);
-                    } else {
-                      const pathMatch = str.match(/[A-Za-z]:\\[^"'\n\r]+\\([a-zA-Z0-9_\-]+)/);
-                      if (pathMatch && pathMatch[1] && !['brain', 'logs', 'tasks', 'AppData', 'Users', 'Programs'].includes(pathMatch[1])) {
-                        projectName = pathMatch[1];
+                // Extract project name from workspace mapping or paths
+                if (!projectName) {
+                  const corpusMatch = str.match(/->\s*([a-zA-Z0-9_\-\.\/]+)/);
+                  if (corpusMatch && corpusMatch[1] && !corpusMatch[1].includes('{') && !corpusMatch[1].includes('[')) {
+                    projectName = path.basename(corpusMatch[1]);
+                  } else {
+                    const pathMatch = str.match(/([a-zA-Z]:\\[^"'\n\r\t]+)/);
+                    if (pathMatch && pathMatch[1]) {
+                      const cleanPath = pathMatch[1].replace(/\\+$/, '');
+                      const bName = path.basename(cleanPath);
+                      if (bName && !['brain', 'logs', 'tasks', 'AppData', 'Users', 'Programs', 'system_generated', 'scratch'].includes(bName)) {
+                        projectName = bName;
                       }
                     }
                   }
-
-                  if (obj.type === 'USER_INPUT' && obj.content && !previewText) {
-                    let cleaned = String(obj.content)
-                      .replace(/<USER_REQUEST>[\s\S]*?<\/USER_REQUEST>/g, (m) => m.replace(/<\/?USER_REQUEST>/g, ''))
-                      .replace(/<[^>]+>/g, '')
-                      .replace(/\s+/g, ' ')
-                      .trim();
-                    if (cleaned.length > 0) {
-                      previewText = cleaned.slice(0, 90);
-                    }
-                  }
-                } catch {
-                  // ignore JSON parse errors on malformed lines
                 }
+
+                if (obj.type === 'USER_INPUT' && obj.content && !previewText) {
+                  let cleaned = String(obj.content)
+                    .replace(/<USER_REQUEST>[\s\S]*?<\/USER_REQUEST>/g, (m) => m.replace(/<\/?USER_REQUEST>/g, ''))
+                    .replace(/<[^>]+>/g, '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                  if (cleaned.length > 0) {
+                    previewText = cleaned.slice(0, 90);
+                  }
+                }
+              } catch {
+                // ignore JSON parse errors on malformed lines
               }
-            } catch {
-              // ignore file read error
             }
+          } catch {
+            // ignore file read error
           }
+
+          if (stepCount === 0 && !previewText) {
+            continue;
+          }
+
+          seenIds.add(convId);
 
           const date = new Date(mtime);
           const dateFormatted = date.toLocaleDateString(undefined, {
@@ -141,8 +158,8 @@ export class ConversationService {
             transcriptPath,
             stepCount,
             previewText,
-            projectName: projectName || 'Default Workspace',
-            tokenEstimate: tokenEstimate || stepCount * 1200,
+            projectName: projectName || 'General Workspace',
+            tokenEstimate: tokenEstimate || stepCount * 1400,
           });
         }
       } catch (err) {

@@ -40,15 +40,14 @@ export class AccountService {
       this.accounts.set(acc.email, acc);
     }
 
-    // If storage was empty, immediately hydrate from local Shield disk storage
-    if (this.accounts.size === 0) {
-      const local = ShieldBridge.getInstance().loadAccountsFromLocalDisk();
+    // Always re-hydrate from Shield disk storage to guarantee real-time quota accuracy!
+    const local = ShieldBridge.getInstance().loadAccountsFromLocalDisk();
+    if (local.length > 0) {
       for (const acc of local) {
         this.accounts.set(acc.email, acc);
-      }
-      if (!this.activeEmail && local.length > 0) {
-        const active = local.find((a) => a.isActive) || local[0];
-        this.activeEmail = active.email;
+        if (acc.isActive) {
+          this.activeEmail = acc.email;
+        }
       }
     }
 
@@ -130,27 +129,51 @@ export class AccountService {
   }
 
   /**
-   * Calculates a composite health score (0-100) for an account based on remaining quota across models.
+   * Calculates an accurate health score (0-100) based on Gemini quota groups and models,
+   * matching Antigravity Shield desktop telemetry.
    */
   public getAccountHealth(account: Account): number {
-    if (!account.quotas || account.quotas.length === 0) {
-      return 100;
+    // 1. Primary: check Gemini quota group (matching Shield desktop)
+    if (account.quotaGroups && account.quotaGroups.length > 0) {
+      const geminiGroup = account.quotaGroups.find((g) =>
+        g.displayName.toLowerCase().includes('gemini')
+      );
+      if (geminiGroup) {
+        if (geminiGroup.fiveHourBucket && typeof geminiGroup.fiveHourBucket.remainingPercentage === 'number') {
+          return geminiGroup.fiveHourBucket.remainingPercentage;
+        }
+        if (geminiGroup.weeklyBucket && typeof geminiGroup.weeklyBucket.remainingPercentage === 'number') {
+          return geminiGroup.weeklyBucket.remainingPercentage;
+        }
+      }
     }
 
-    const totalRemaining = account.quotas.reduce((sum, q) => {
-      const remaining = typeof q.remainingQuota === 'number'
-        ? q.remainingQuota
-        : Math.max(0, 100 - q.usagePercentage);
-      return sum + remaining;
-    }, 0);
+    // 2. Secondary: check core Gemini models (e.g. Pro, High, Flash)
+    if (account.quotas && account.quotas.length > 0) {
+      const geminiModels = account.quotas.filter((q) =>
+        q.modelId.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('gemini')
+      );
+      if (geminiModels.length > 0) {
+        const primary = geminiModels.find((q) =>
+          q.modelId.toLowerCase().includes('pro') || q.displayName.toLowerCase().includes('pro')
+        ) || geminiModels[0];
 
-    const average = totalRemaining / account.quotas.length;
-    let tierBonus = 0;
-    const tierLower = (account.tier || '').toLowerCase();
-    if (tierLower.includes('ultra')) tierBonus = 5;
-    else if (tierLower.includes('pro')) tierBonus = 2;
+        return typeof primary.remainingQuota === 'number'
+          ? primary.remainingQuota
+          : Math.max(0, 100 - primary.usagePercentage);
+      }
 
-    return Math.min(100, Math.max(0, average + tierBonus));
+      const totalRemaining = account.quotas.reduce((sum, q) => {
+        const remaining = typeof q.remainingQuota === 'number'
+          ? q.remainingQuota
+          : Math.max(0, 100 - q.usagePercentage);
+        return sum + remaining;
+      }, 0);
+
+      return Math.round(totalRemaining / account.quotas.length);
+    }
+
+    return 100;
   }
 
   /**
@@ -185,17 +208,17 @@ export class AccountService {
   }
 
   /**
-   * Pulls fresh accounts from Antigravity Shield (HTTP or local disk)
+   * Pulls fresh accounts from Antigravity Shield (local disk storage & daemon)
    */
   public async syncFromShield(): Promise<number> {
     const shield = ShieldBridge.getInstance();
-    let fetched = await shield.fetchShieldAccounts();
+    let fetched = shield.loadAccountsFromLocalDisk();
     if (fetched.length === 0) {
-      fetched = shield.loadAccountsFromLocalDisk();
+      fetched = await shield.fetchShieldAccounts();
     }
 
     if (fetched.length === 0) {
-      vscode.window.showInformationMessage('No accounts found in Shield or local storage.');
+      vscode.window.showInformationMessage('No accounts found in Shield storage.');
       return 0;
     }
 
@@ -213,7 +236,7 @@ export class AccountService {
     }
 
     await this.persistAccounts();
-    vscode.window.showInformationMessage(`Successfully synchronized ${fetched.length} accounts from Shield.`);
+    vscode.window.showInformationMessage(`Successfully synchronized ${fetched.length} accounts from Antigravity Shield.`);
     return fetched.length;
   }
 }

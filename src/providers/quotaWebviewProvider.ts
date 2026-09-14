@@ -89,13 +89,21 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     const conversations = await this.conversationService.getConversations();
     const isShieldOnline = await ShieldBridge.getInstance().isShieldOnline();
 
+    // Detect currently open workspace in VS Code / Antigravity IDE
+    const currentWorkspaceName =
+      vscode.workspace.name ||
+      (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0]
+        ? vscode.workspace.workspaceFolders[0].name
+        : '');
+
     this._view.webview.html = this.renderHtml(
       activeAccount,
       quotas,
       accounts,
       autoSwitchStatus,
       conversations,
-      isShieldOnline
+      isShieldOnline,
+      currentWorkspaceName
     );
   }
 
@@ -105,7 +113,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     accounts: Account[],
     autoSwitchStatus: { enabled: boolean; thresholdPercent: number; cooldownMinutes: number },
     conversations: ConversationSession[],
-    isShieldOnline: boolean
+    isShieldOnline: boolean,
+    currentWorkspaceName: string
   ): string {
     const activeEmail = activeAccount ? activeAccount.email : 'No active account';
     const activeTier = activeAccount ? activeAccount.tier || 'Google AI Pro' : 'Free';
@@ -181,6 +190,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     const renderQuotaCard = (group: QuotaGroup, cardIdx: number) => {
+      const isGemini = group.displayName.toLowerCase().includes('gemini');
       const fiveHour = group.fiveHourBucket || {
         remainingPercentage: 100,
         resetTimeMs: defaultReset,
@@ -196,13 +206,20 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       const strokeDashoffset = circumference - (fiveHour.remainingPercentage / 100) * circumference;
 
       return `
-        <div class="quota-group-card" data-reset-ms="${fiveHour.resetTimeMs}">
+        <div class="quota-group-card ${isGemini ? 'group-card-active' : ''}" data-reset-ms="${fiveHour.resetTimeMs}">
           <div class="group-header">
             <div class="group-title-col">
-              <span class="group-name">${group.displayName}</span>
+              <div class="group-name-row">
+                <span class="group-name">${group.displayName}</span>
+                ${
+                  isGemini
+                    ? `<span class="pill-active-model">⚡ ACTIVE IN IDE</span>`
+                    : `<span class="pill-standby-model">STANDBY POOL</span>`
+                }
+              </div>
               <span class="group-desc">${group.description || 'Enterprise AI Quota Pool'}</span>
             </div>
-            <span class="pill-shield">${fiveHour.remainingPercentage}% Healthy</span>
+            <span class="pill-shield">${fiveHour.remainingPercentage}% Capacity</span>
           </div>
 
           <div class="group-body">
@@ -252,21 +269,58 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     // Group Conversations by Project
     const projectsMap = new Map<string, ConversationSession[]>();
     for (const conv of conversations) {
-      const pName = conv.projectName || 'Default Project';
+      const pName = conv.projectName || 'General Workspace';
       if (!projectsMap.has(pName)) {
         projectsMap.set(pName, []);
       }
       projectsMap.get(pName)!.push(conv);
     }
 
-    const projectsHtml = Array.from(projectsMap.entries())
-      .map(([pName, sessions]) => {
+    // Sort projects so CURRENT WORKSPACE is first!
+    const sortedProjectEntries = Array.from(projectsMap.entries()).sort(([nameA, sessionsA], [nameB, sessionsB]) => {
+      const isCurrentA = currentWorkspaceName && nameA.toLowerCase().includes(currentWorkspaceName.toLowerCase());
+      const isCurrentB = currentWorkspaceName && nameB.toLowerCase().includes(currentWorkspaceName.toLowerCase());
+      if (isCurrentA && !isCurrentB) return -1;
+      if (!isCurrentA && isCurrentB) return 1;
+      const latestA = sessionsA[0]?.updatedAt || 0;
+      const latestB = sessionsB[0]?.updatedAt || 0;
+      return latestB - latestA;
+    });
+
+    const nowTime = Date.now();
+    const oneDayMs = 24 * 60 * 60 * 1000;
+
+    const projectsHtml = sortedProjectEntries
+      .map(([pName, sessions], pIdx) => {
+        // Sort sessions descending by date (newest first)
+        sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+
         const totalTokens = sessions.reduce((sum, s) => sum + (s.tokenEstimate || 0), 0);
         const tokensFormatted = totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : `${totalTokens}`;
 
+        const isCurrentProject = currentWorkspaceName && pName.toLowerCase().includes(currentWorkspaceName.toLowerCase());
+        // Current project is open by default, other projects collapsed by default!
+        const isOpenByDefault = isCurrentProject || pIdx === 0;
+
         const timelineNodes = sessions
           .map((s, sIdx) => {
-            const tokens = s.tokenEstimate ? (s.tokenEstimate > 1000 ? `${(s.tokenEstimate / 1000).toFixed(1)}k tokens` : `${s.tokenEstimate} tokens`) : `${s.stepCount * 1.2}k tokens`;
+            const tokens = s.tokenEstimate ? (s.tokenEstimate > 1000 ? `${(s.tokenEstimate / 1000).toFixed(1)}k tokens` : `${s.tokenEstimate} tokens`) : `${s.stepCount * 1.4}k tokens`;
+
+            // Friendly relative date tagging
+            const diffDays = (nowTime - s.updatedAt) / oneDayMs;
+            let dateTag = s.dateFormatted;
+            let datePillClass = 'date-earlier';
+            if (diffDays < 1) {
+              dateTag = '🟢 Today • ' + new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              datePillClass = 'date-today';
+            } else if (diffDays < 2) {
+              dateTag = '🟡 Yesterday • ' + new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              datePillClass = 'date-yesterday';
+            } else if (diffDays < 7) {
+              dateTag = '🔵 ' + s.dateFormatted;
+              datePillClass = 'date-week';
+            }
+
             return `
             <div class="timeline-node" onclick="openTranscript('${s.id}')">
               <div class="node-bullet">
@@ -278,7 +332,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                   <span class="node-token-tag">${tokens}</span>
                 </div>
                 <div class="node-footer">
-                  <span>${s.dateFormatted}</span>
+                  <span class="node-date-tag ${datePillClass}">${dateTag}</span>
                   <span>${s.stepCount} Steps</span>
                   <span class="node-open-btn">Inspect ↗</span>
                 </div>
@@ -289,82 +343,88 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           .join('');
 
         return `
-        <div class="project-cluster-card">
-          <div class="project-cluster-header">
+        <div class="project-cluster-card ${isOpenByDefault ? 'is-expanded' : 'is-collapsed'} ${isCurrentProject ? 'is-current' : ''}" id="proj-card-${pIdx}">
+          <div class="project-cluster-header" onclick="toggleProject(${pIdx})">
             <div class="project-name-row">
+              <span class="project-chevron" id="proj-chevron-${pIdx}">${isOpenByDefault ? '▼' : '▶'}</span>
               <span class="project-icon">📂</span>
-              <span class="project-name">${pName}</span>
+              <span class="project-name" title="${pName}">${pName}</span>
+              ${isCurrentProject ? '<span class="pill-current-workspace">⭐ Current</span>' : ''}
             </div>
             <div class="project-meta-badges">
               <span class="badge-sessions">${sessions.length} Chats</span>
               <span class="badge-tokens">${tokensFormatted} Tokens</span>
             </div>
           </div>
-          <div class="timeline-tree">
-            ${timelineNodes}
+          <div class="project-body" id="proj-body-${pIdx}" style="${isOpenByDefault ? '' : 'display: none;'}">
+            <div class="timeline-tree">
+              ${timelineNodes}
+            </div>
           </div>
         </div>
       `;
       })
       .join('');
 
-    // Switchboard Account Cards
+    // Compact, Clean Switchboard Rows
     const accountCardsHtml = accounts
       .map((acc) => {
         const isActive = acc.isActive;
         const health = Math.round(this.accountService.getAccountHealth(acc));
         const initials = acc.email.slice(0, 2).toUpperCase();
 
-        let healthColor = '#2dd4bf';
-        let statusBadge = '🟢 Ready';
+        let healthColor = '#2dd4bf'; // Seafoam green
+        let statusBadge = 'Ready';
+        let statusClass = 'badge-ready';
+
         if (isActive) {
-          statusBadge = '⚡ Active';
-        } else if (health <= 5) {
-          healthColor = '#f43f5e';
-          statusBadge = '🔴 Depleted';
+          statusBadge = 'Active in IDE';
+          statusClass = 'badge-active-ide';
+        } else if (health === 0) {
+          healthColor = '#f43f5e'; // Crimson Red
+          statusBadge = 'Depleted';
+          statusClass = 'badge-depleted';
         } else if (health <= 35) {
-          healthColor = '#f59e0b';
-          statusBadge = '🟡 Low';
+          healthColor = '#fb923c'; // Orange
+          statusBadge = 'Low';
+          statusClass = 'badge-low';
+        } else if (health < 80) {
+          healthColor = '#38bdf8'; // Cyan
+          statusBadge = 'Healthy';
+          statusClass = 'badge-healthy';
         }
 
         return `
-        <div class="account-card ${isActive ? 'account-active-glow' : ''}">
-          <div class="account-card-header">
-            <div class="account-avatar-wrapper">
+        <div class="compact-account-row ${isActive ? 'row-active' : ''}">
+          <div class="row-left">
+            <div class="compact-avatar-wrapper">
               ${
                 acc.avatarUrl
-                  ? `<img class="account-avatar-img" src="${acc.avatarUrl}" alt="${acc.email}" />`
-                  : `<div class="account-avatar-fallback">${initials}</div>`
+                  ? `<img class="compact-avatar-img" src="${acc.avatarUrl}" alt="${acc.email}" />`
+                  : `<div class="compact-avatar-fallback">${initials}</div>`
               }
-              ${isActive ? '<span class="active-pulse-beacon"></span>' : ''}
+              ${isActive ? '<span class="compact-active-dot"></span>' : ''}
             </div>
-            <div class="account-text-details">
-              <div class="account-email" title="${acc.email}">${acc.email}</div>
-              <div class="account-subrow">
-                <span class="tier-pill">${acc.tier || 'Google AI Pro'}</span>
-                <span class="status-pill">${statusBadge}</span>
+            <div class="compact-info">
+              <div class="compact-email-row">
+                <span class="compact-email" title="${acc.email}">${acc.email}</span>
+                <span class="compact-status-badge ${statusClass}">${statusBadge}</span>
+              </div>
+              <div class="compact-meter-row">
+                <div class="compact-meter-bg">
+                  <div class="compact-meter-fill" style="width: ${health}%; background: ${healthColor};"></div>
+                </div>
+                <span class="compact-health-val" style="color: ${healthColor};">${health}%</span>
               </div>
             </div>
           </div>
 
-          <div class="account-health-row">
-            <div class="health-meta">
-              <span>Quota Capacity</span>
-              <span style="color: ${healthColor}; font-weight: 700;">${health}%</span>
-            </div>
-            <div class="mini-health-bar-bg">
-              <div class="mini-health-bar-fill" style="width: ${health}%; background: ${healthColor};"></div>
-            </div>
-          </div>
-
-          <div class="account-card-action">
+          <div class="row-right">
             ${
               isActive
-                ? `<button class="btn-account-active" disabled>
-                    ✓ Current Active Session
-                   </button>`
-                : `<button class="btn-switch-account" onclick="switchAccount('${acc.email}')">
-                    ⚡ Switch to Session
+                ? `<span class="pill-active-check">Active ✓</span>`
+                : `<button class="btn-compact-switch" onclick="switchAccount('${acc.email}')">
+                    ⚡ Switch
                    </button>`
             }
           </div>
@@ -796,63 +856,120 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       border-radius: 2px;
     }
 
-    /* Switchboard Cards */
+    /* Active Model Badges */
+    .group-card-active {
+      border: 1px solid var(--seafoam) !important;
+      box-shadow: 0 0 16px -2px var(--seafoam-glow);
+    }
+
+    .group-name-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .pill-active-model {
+      font-size: 8.5px;
+      font-weight: 800;
+      color: #042f2e;
+      background: #2dd4bf;
+      padding: 1px 6px;
+      border-radius: 999px;
+      letter-spacing: 0.04em;
+      box-shadow: 0 0 8px rgba(45, 212, 191, 0.5);
+    }
+
+    .pill-standby-model {
+      font-size: 8.5px;
+      font-weight: 600;
+      color: #94a3b8;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .active-session-model-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 4px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .active-model-name {
+      font-size: 10.5px;
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+
+    /* Compact Switchboard Rows */
     .accounts-grid {
       display: flex;
       flex-direction: column;
-      gap: 7px;
+      gap: 6px;
     }
 
-    .account-card {
+    .compact-account-row {
       background: var(--card-bg);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 12px;
-      padding: 9px;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 10px;
+      padding: 7px 10px;
       display: flex;
-      flex-direction: column;
-      gap: 7px;
-      transition: border-color 0.2s ease;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      transition: all 0.2s ease;
     }
 
-    .account-active-glow {
+    .compact-account-row:hover {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(45, 212, 191, 0.3);
+    }
+
+    .compact-account-row.row-active {
       border: 1px solid var(--seafoam);
+      background: rgba(45, 212, 191, 0.06);
       box-shadow: 0 0 12px -2px var(--seafoam-glow);
     }
 
-    .account-card-header {
+    .row-left {
       display: flex;
       align-items: center;
       gap: 8px;
+      min-width: 0;
+      flex: 1;
     }
 
-    .account-avatar-wrapper {
+    .compact-avatar-wrapper {
       position: relative;
-      width: 28px;
-      height: 28px;
+      width: 26px;
+      height: 26px;
       flex-shrink: 0;
     }
 
-    .account-avatar-img {
-      width: 28px;
-      height: 28px;
+    .compact-avatar-img {
+      width: 26px;
+      height: 26px;
       border-radius: 50%;
       object-fit: cover;
     }
 
-    .account-avatar-fallback {
-      width: 28px;
-      height: 28px;
+    .compact-avatar-fallback {
+      width: 26px;
+      height: 26px;
       border-radius: 50%;
       background: linear-gradient(135deg, #1e293b, #334155);
       color: var(--seafoam-light);
-      font-size: 10.5px;
+      font-size: 10px;
       font-weight: 700;
       display: flex;
       align-items: center;
       justify-content: center;
     }
 
-    .active-pulse-beacon {
+    .compact-active-dot {
       position: absolute;
       bottom: -1px;
       right: -1px;
@@ -863,98 +980,122 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       border: 1.5px solid #0f172a;
     }
 
-    .account-text-details {
-      flex: 1;
+    .compact-info {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
       min-width: 0;
+      flex: 1;
     }
 
-    .account-email {
+    .compact-email-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .compact-email {
       font-size: 11px;
       font-weight: 600;
       color: #f1f5f9;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      max-width: 140px;
     }
 
-    .account-subrow {
+    .compact-status-badge {
+      font-size: 8.5px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    .badge-active-ide {
+      background: rgba(45, 212, 191, 0.2);
+      color: var(--seafoam-light);
+      border: 1px solid var(--seafoam);
+    }
+
+    .badge-ready {
+      background: rgba(45, 212, 191, 0.12);
+      color: var(--seafoam-light);
+    }
+
+    .badge-healthy {
+      background: rgba(56, 189, 248, 0.15);
+      color: #38bdf8;
+    }
+
+    .badge-low {
+      background: rgba(251, 146, 60, 0.15);
+      color: #fb923c;
+    }
+
+    .badge-depleted {
+      background: rgba(244, 63, 94, 0.18);
+      color: #f43f5e;
+      border: 1px solid rgba(244, 63, 94, 0.4);
+    }
+
+    .compact-meter-row {
       display: flex;
       align-items: center;
-      gap: 5px;
-      margin-top: 1px;
+      gap: 6px;
     }
 
-    .tier-pill {
-      font-size: 8.5px;
-      background: rgba(255, 255, 255, 0.06);
-      color: #cbd5e1;
-      padding: 1px 5px;
-      border-radius: 3px;
-    }
-
-    .status-pill {
-      font-size: 8.5px;
-      color: #94a3b8;
-    }
-
-    .account-health-row {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .health-meta {
-      display: flex;
-      justify-content: space-between;
-      font-size: 9.5px;
-      color: var(--text-muted);
-    }
-
-    .mini-health-bar-bg {
-      width: 100%;
-      height: 3.5px;
+    .compact-meter-bg {
+      flex: 1;
+      height: 3px;
       background: rgba(255, 255, 255, 0.08);
       border-radius: 2px;
       overflow: hidden;
     }
 
-    .mini-health-bar-fill {
+    .compact-meter-fill {
       height: 100%;
       border-radius: 2px;
     }
 
-    .account-card-action button {
-      width: 100%;
-      border: none;
-      padding: 5px 8px;
+    .compact-health-val {
+      font-size: 9.5px;
+      font-weight: 700;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      width: 28px;
+      text-align: right;
+    }
+
+    .row-right {
+      flex-shrink: 0;
+    }
+
+    .pill-active-check {
+      font-size: 9.5px;
+      font-weight: 700;
+      color: var(--seafoam-light);
+      background: var(--seafoam-bg);
+      border: 1px solid var(--card-border);
+      padding: 3px 8px;
       border-radius: 6px;
-      font-size: 10.5px;
+    }
+
+    .btn-compact-switch {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #e2e8f0;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 10px;
       font-weight: 600;
       cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-      transition: all 0.2s ease;
+      transition: all 0.15s ease;
     }
 
-    .btn-switch-account {
-      background: rgba(255, 255, 255, 0.08);
-      color: #f1f5f9;
-      border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    }
-
-    .btn-switch-account:hover {
+    .btn-compact-switch:hover {
       background: var(--seafoam-bg);
-      border-color: var(--seafoam) !important;
+      border-color: var(--seafoam);
       color: var(--seafoam-light);
-    }
-
-    .btn-account-active {
-      background: var(--seafoam-bg);
-      color: var(--seafoam-light);
-      border: 1px solid var(--card-border) !important;
-      cursor: default;
+      box-shadow: 0 0 8px var(--seafoam-glow);
     }
 
     /* Project Timeline Graph (Tab 2) */
@@ -966,14 +1107,38 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       display: flex;
       flex-direction: column;
       gap: 8px;
+      transition: all 0.2s ease;
+    }
+
+    .project-cluster-card.is-current {
+      border-color: var(--seafoam);
+      box-shadow: 0 0 14px -3px var(--seafoam-glow);
     }
 
     .project-cluster-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      cursor: pointer;
+      user-select: none;
+      padding: 2px 0;
+    }
+
+    .project-cluster-card.is-expanded .project-cluster-header {
       border-bottom: 1px solid rgba(255, 255, 255, 0.06);
       padding-bottom: 6px;
+    }
+
+    .project-cluster-header:hover .project-name {
+      color: var(--seafoam-light);
+    }
+
+    .project-chevron {
+      font-size: 9px;
+      color: var(--text-muted);
+      width: 12px;
+      display: inline-block;
+      transition: transform 0.2s ease;
     }
 
     .project-name-row {
@@ -986,6 +1151,17 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       font-size: 11.5px;
       font-weight: 700;
       color: #fff;
+      transition: color 0.15s ease;
+    }
+
+    .pill-current-workspace {
+      font-size: 8.5px;
+      font-weight: 700;
+      color: #042f2e;
+      background: #2dd4bf;
+      padding: 1px 5px;
+      border-radius: 4px;
+      letter-spacing: 0.03em;
     }
 
     .project-meta-badges {
@@ -1090,6 +1266,33 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     .node-open-btn {
       color: var(--seafoam-light);
       font-weight: 600;
+    }
+
+    .node-date-tag {
+      font-size: 8.5px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    .node-date-tag.date-today {
+      color: var(--seafoam-light);
+      background: rgba(45, 212, 191, 0.15);
+      border: 1px solid rgba(45, 212, 191, 0.3);
+    }
+
+    .node-date-tag.date-yesterday {
+      color: #facc15;
+      background: rgba(250, 204, 21, 0.12);
+    }
+
+    .node-date-tag.date-week {
+      color: #38bdf8;
+      background: rgba(56, 189, 248, 0.12);
+    }
+
+    .node-date-tag.date-earlier {
+      color: var(--text-muted);
     }
 
     /* Tab 3: Remote Control */
@@ -1266,6 +1469,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           </div>
         </div>
         <div class="active-session-email">${activeEmail}</div>
+        <div class="active-session-model-row">
+          <span class="pill-active-model">⚡ ACTIVE IN IDE</span>
+          <span class="active-model-name">Google Gemini 3.7 Pro (High)</span>
+        </div>
       </div>
 
       <!-- Auto-Rotate Smart Switch HUD Bar -->
@@ -1421,6 +1628,29 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     function openTranscript(sessionId) {
       if (sessionId) {
         vscode.postMessage({ command: 'openTranscript', sessionId: sessionId });
+      }
+    }
+
+    function toggleProject(pIdx) {
+      const body = document.getElementById('proj-body-' + pIdx);
+      const chevron = document.getElementById('proj-chevron-' + pIdx);
+      const card = document.getElementById('proj-card-' + pIdx);
+      if (!body) return;
+
+      if (body.style.display === 'none') {
+        body.style.display = '';
+        if (chevron) chevron.innerText = '▼';
+        if (card) {
+          card.classList.remove('is-collapsed');
+          card.classList.add('is-expanded');
+        }
+      } else {
+        body.style.display = 'none';
+        if (chevron) chevron.innerText = '▶';
+        if (card) {
+          card.classList.remove('is-expanded');
+          card.classList.add('is-collapsed');
+        }
       }
     }
 
