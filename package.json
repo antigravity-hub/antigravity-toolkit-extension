@@ -2,7 +2,7 @@
   "name": "antigravity-toolkit",
   "displayName": "Antigravity Toolkit",
   "description": "The all-in-one IDE toolkit for Antigravity: visual conversation history, quota analytics, and instant live account switching.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "antigravity-hub",
   "repository": {
     "type": "git",
