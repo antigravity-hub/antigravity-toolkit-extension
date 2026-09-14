@@ -215,10 +215,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                   cy="35"
                   r="${radius}"
                   style="
-                    stroke: #93b93b;
+                    stroke: var(--seafoam);
                     stroke-dasharray: ${circumference};
                     stroke-dashoffset: ${strokeDashoffset};
-                    filter: drop-shadow(0 0 8px rgba(147, 185, 59, 0.45));
+                    filter: drop-shadow(0 0 8px var(--seafoam-glow));
                   "
                 />
               </svg>
@@ -241,7 +241,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                 <span class="metric-v">${weekly.remainingPercentage}% remaining</span>
               </div>
               <div class="mini-bar-bg">
-                <div class="mini-bar-fill" style="width: ${weekly.remainingPercentage}%; background: #93b93b;"></div>
+                <div class="mini-bar-fill" style="width: ${weekly.remainingPercentage}%; background: linear-gradient(90deg, var(--seafoam-dark), var(--seafoam));"></div>
               </div>
             </div>
           </div>
@@ -315,7 +315,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         const health = Math.round(this.accountService.getAccountHealth(acc));
         const initials = acc.email.slice(0, 2).toUpperCase();
 
-        let healthColor = '#93b93b';
+        let healthColor = '#2dd4bf';
         let statusBadge = '🟢 Ready';
         if (isActive) {
           statusBadge = '⚡ Active';
@@ -382,14 +382,15 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
   <style>
     :root {
       --font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif);
-      --shield-green: #93b93b;
-      --shield-green-light: #a8cf45;
-      --shield-green-dark: #7a9c2d;
-      --shield-green-glow: rgba(147, 185, 59, 0.4);
-      --shield-green-bg: rgba(147, 185, 59, 0.12);
-      --bg-surface: #0a0e17;
-      --card-bg: rgba(15, 22, 36, 0.85);
-      --card-border: rgba(147, 185, 59, 0.22);
+      --seafoam: #2dd4bf;
+      --seafoam-light: #5eead4;
+      --seafoam-dark: #0f766e;
+      --seafoam-glow: rgba(45, 212, 191, 0.45);
+      --seafoam-bg: rgba(45, 212, 191, 0.12);
+      --accent-cyan: #06b6d4;
+      --bg-surface: #090d16;
+      --card-bg: rgba(15, 23, 42, 0.85);
+      --card-border: rgba(45, 212, 191, 0.22);
       --text-main: #f8fafc;
       --text-muted: #94a3b8;
     }
@@ -421,7 +422,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: linear-gradient(135deg, rgba(20, 29, 46, 0.95) 0%, rgba(13, 19, 32, 0.98) 100%);
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(9, 13, 22, 0.98) 100%);
       border: 1px solid var(--card-border);
       border-radius: 14px;
       padding: 10px 12px;
@@ -438,15 +439,15 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       width: 24px;
       height: 24px;
       fill: none;
-      stroke: var(--shield-green);
+      stroke: var(--seafoam);
       stroke-width: 2;
-      filter: drop-shadow(0 0 6px var(--shield-green-glow));
+      filter: drop-shadow(0 0 6px var(--seafoam-glow));
       animation: pulseShield 3s ease-in-out infinite alternate;
     }
 
     @keyframes pulseShield {
-      0% { transform: scale(1); filter: drop-shadow(0 0 4px var(--shield-green-glow)); }
-      100% { transform: scale(1.08); filter: drop-shadow(0 0 10px var(--shield-green-glow)); }
+      0% { transform: scale(1); filter: drop-shadow(0 0 4px var(--seafoam-glow)); }
+      100% { transform: scale(1.08); filter: drop-shadow(0 0 10px var(--seafoam-glow)); }
     }
 
     .brand-title-text {
@@ -459,9 +460,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     .brand-version-pill {
       font-size: 9px;
       font-weight: 700;
-      background: var(--shield-green-bg);
+      background: var(--seafoam-bg);
       border: 1px solid var(--card-border);
-      color: var(--shield-green-light);
+      color: var(--seafoam-light);
       padding: 1px 6px;
       border-radius: 999px;
     }
@@ -471,7 +472,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       align-items: center;
       gap: 5px;
       font-size: 10px;
-      color: ${isShieldOnline ? 'var(--shield-green-light)' : '#94a3b8'};
+      color: ${isShieldOnline ? 'var(--seafoam-light)' : '#94a3b8'};
       background: rgba(0, 0, 0, 0.25);
       border: 1px solid rgba(255, 255, 255, 0.08);
       padding: 3px 8px;
@@ -482,17 +483,17 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       width: 6px;
       height: 6px;
       border-radius: 50%;
-      background: ${isShieldOnline ? 'var(--shield-green)' : '#64748b'};
-      box-shadow: ${isShieldOnline ? '0 0 6px var(--shield-green)' : 'none'};
+      background: ${isShieldOnline ? 'var(--seafoam)' : '#64748b'};
+      box-shadow: ${isShieldOnline ? '0 0 6px var(--seafoam)' : 'none'};
     }
 
     /* Smart Dynamic Responsive Tabs Navigation */
     .tab-navigation {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
-      gap: 6px;
-      background: rgba(13, 19, 32, 0.7);
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      grid-template-columns: repeat(4, 1fr);
+      gap: 5px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(45, 212, 191, 0.18);
       border-radius: 12px;
       padding: 5px;
     }
@@ -501,33 +502,34 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       background: transparent;
       border: 1px solid transparent;
       color: var(--text-muted);
-      padding: 6px 4px;
+      padding: 6px 2px;
       border-radius: 8px;
-      font-size: 10.5px;
+      font-size: 10px;
       font-weight: 600;
       cursor: pointer;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 2px;
+      gap: 3px;
       transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
     .tab-btn:hover {
       color: #fff;
-      background: rgba(255, 255, 255, 0.05);
+      background: rgba(45, 212, 191, 0.08);
+      border-color: rgba(45, 212, 191, 0.2);
     }
 
     .tab-btn.active {
-      background: var(--shield-green-bg);
-      border-color: var(--shield-green);
-      color: var(--shield-green-light);
-      box-shadow: 0 0 10px rgba(147, 185, 59, 0.25);
+      background: var(--seafoam-bg);
+      border-color: var(--seafoam);
+      color: var(--seafoam-light);
+      box-shadow: 0 0 12px var(--seafoam-glow);
     }
 
     .tab-btn .tab-icon {
-      font-size: 13px;
+      font-size: 14px;
     }
 
     /* Tab Contents */
@@ -543,7 +545,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     /* Active Session Card */
     .active-session-card {
-      background: linear-gradient(135deg, rgba(20, 30, 48, 0.9) 0%, rgba(15, 22, 36, 0.95) 100%);
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(9, 13, 22, 0.98) 100%);
       border: 1px solid var(--card-border);
       border-radius: 14px;
       padding: 12px;
@@ -577,9 +579,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       font-weight: 700;
       padding: 2px 7px;
       border-radius: 999px;
-      background: var(--shield-green-bg);
+      background: var(--seafoam-bg);
       border: 1px solid var(--card-border);
-      color: var(--shield-green-light);
+      color: var(--seafoam-light);
     }
 
     .pill-health {
@@ -593,14 +595,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     /* Auto-Rotate Bar */
     .auto-rotate-bar {
-      background: rgba(15, 22, 36, 0.7);
-      border: 1px solid ${isAutoOn ? 'var(--shield-green)' : 'rgba(255, 255, 255, 0.08)'};
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid ${isAutoOn ? 'var(--seafoam)' : 'rgba(255, 255, 255, 0.08)'};
       border-radius: 12px;
       padding: 8px 10px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      box-shadow: ${isAutoOn ? '0 0 14px -2px rgba(147, 185, 59, 0.25)' : 'none'};
+      box-shadow: ${isAutoOn ? '0 0 14px -2px var(--seafoam-glow)' : 'none'};
       transition: all 0.25s ease;
     }
 
@@ -614,8 +616,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       width: 10px;
       height: 10px;
       border-radius: 50%;
-      background: ${isAutoOn ? 'var(--shield-green)' : '#64748b'};
-      box-shadow: ${isAutoOn ? '0 0 8px var(--shield-green)' : 'none'};
+      background: ${isAutoOn ? 'var(--seafoam)' : '#64748b'};
+      box-shadow: ${isAutoOn ? '0 0 8px var(--seafoam)' : 'none'};
       animation: ${isAutoOn ? 'pulseWave 2s infinite' : 'none'};
     }
 
@@ -628,7 +630,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     .auto-text-main {
       font-size: 10.5px;
       font-weight: 700;
-      color: ${isAutoOn ? 'var(--shield-green-light)' : '#94a3b8'};
+      color: ${isAutoOn ? 'var(--seafoam-light)' : '#94a3b8'};
     }
 
     .auto-text-sub {
@@ -637,9 +639,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .btn-toggle-auto {
-      background: ${isAutoOn ? 'linear-gradient(135deg, #7a9c2d 0%, #93b93b 100%)' : 'rgba(255,255,255,0.08)'};
+      background: ${isAutoOn ? 'linear-gradient(135deg, #0f766e 0%, #2dd4bf 100%)' : 'rgba(255,255,255,0.08)'};
       color: #fff;
-      border: 1px solid ${isAutoOn ? 'var(--shield-green-light)' : 'rgba(255,255,255,0.1)'};
+      border: 1px solid ${isAutoOn ? 'var(--seafoam-light)' : 'rgba(255,255,255,0.1)'};
       padding: 4px 10px;
       border-radius: 16px;
       font-size: 10px;
@@ -697,8 +699,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     .pill-shield {
       font-size: 9px;
       font-weight: 700;
-      background: var(--shield-green-bg);
-      color: var(--shield-green-light);
+      background: var(--seafoam-bg);
+      color: var(--seafoam-light);
       border: 1px solid var(--card-border);
       padding: 1px 6px;
       border-radius: 4px;
@@ -772,12 +774,12 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .val-green {
-      color: var(--shield-green-light);
+      color: var(--seafoam-light);
     }
 
     .val-ticker {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      color: var(--shield-green-light);
+      color: var(--seafoam-light);
     }
 
     .mini-bar-bg {
@@ -813,8 +815,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .account-active-glow {
-      border: 1px solid var(--shield-green);
-      box-shadow: 0 0 12px -2px var(--shield-green-glow);
+      border: 1px solid var(--seafoam);
+      box-shadow: 0 0 12px -2px var(--seafoam-glow);
     }
 
     .account-card-header {
@@ -842,7 +844,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       height: 28px;
       border-radius: 50%;
       background: linear-gradient(135deg, #1e293b, #334155);
-      color: var(--shield-green-light);
+      color: var(--seafoam-light);
       font-size: 10.5px;
       font-weight: 700;
       display: flex;
@@ -857,7 +859,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       width: 8px;
       height: 8px;
       border-radius: 50%;
-      background: var(--shield-green);
+      background: var(--seafoam);
       border: 1.5px solid #0f172a;
     }
 
@@ -943,14 +945,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .btn-switch-account:hover {
-      background: var(--shield-green-bg);
-      border-color: var(--shield-green) !important;
-      color: var(--shield-green-light);
+      background: var(--seafoam-bg);
+      border-color: var(--seafoam) !important;
+      color: var(--seafoam-light);
     }
 
     .btn-account-active {
-      background: var(--shield-green-bg);
-      color: var(--shield-green-light);
+      background: var(--seafoam-bg);
+      color: var(--seafoam-light);
       border: 1px solid var(--card-border) !important;
       cursor: default;
     }
@@ -1003,8 +1005,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .badge-tokens {
-      background: var(--shield-green-bg);
-      color: var(--shield-green-light);
+      background: var(--seafoam-bg);
+      color: var(--seafoam-light);
       border: 1px solid var(--card-border);
     }
 
@@ -1014,7 +1016,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       gap: 6px;
       position: relative;
       padding-left: 12px;
-      border-left: 1.5px dashed var(--shield-green-glow);
+      border-left: 1.5px dashed var(--seafoam-glow);
       margin-left: 8px;
     }
 
@@ -1029,8 +1031,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .timeline-node:hover {
-      background: rgba(147, 185, 59, 0.08);
-      border-color: var(--shield-green);
+      background: rgba(45, 212, 191, 0.08);
+      border-color: var(--seafoam);
       transform: translateX(2px);
     }
 
@@ -1042,8 +1044,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       height: 14px;
       border-radius: 50%;
       background: #0f172a;
-      border: 1.5px solid var(--shield-green);
-      color: var(--shield-green-light);
+      border: 1.5px solid var(--seafoam);
+      color: var(--seafoam-light);
       font-size: 8px;
       font-weight: 700;
       display: flex;
@@ -1070,8 +1072,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     .node-token-tag {
       font-size: 8.5px;
-      color: var(--shield-green-light);
-      background: var(--shield-green-bg);
+      color: var(--seafoam-light);
+      background: var(--seafoam-bg);
       padding: 1px 4px;
       border-radius: 3px;
       flex-shrink: 0;
@@ -1086,7 +1088,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .node-open-btn {
-      color: var(--shield-green-light);
+      color: var(--seafoam-light);
       font-weight: 600;
     }
 
@@ -1106,14 +1108,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       width: 44px;
       height: 44px;
       border-radius: 50%;
-      background: var(--shield-green-bg);
-      border: 1px solid var(--shield-green);
+      background: var(--seafoam-bg);
+      border: 1px solid var(--seafoam);
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 20px;
       margin: 0 auto;
-      box-shadow: 0 0 12px var(--shield-green-glow);
+      box-shadow: 0 0 12px var(--seafoam-glow);
     }
 
     .remote-title {
@@ -1129,7 +1131,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .remote-action-btn {
-      background: linear-gradient(135deg, #7a9c2d 0%, #93b93b 100%);
+      background: linear-gradient(135deg, #0f766e 0%, #14b8a6 50%, #2dd4bf 100%);
       color: #fff;
       border: none;
       padding: 8px 12px;
@@ -1141,6 +1143,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       align-items: center;
       justify-content: center;
       gap: 6px;
+      box-shadow: 0 2px 10px var(--seafoam-glow);
     }
 
     /* Tab 4: Shield Bridge */
@@ -1169,7 +1172,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     .bridge-val {
       font-weight: 600;
-      color: var(--shield-green-light);
+      color: var(--seafoam-light);
     }
 
     /* Quick Action Dock */
@@ -1197,17 +1200,17 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .btn-dock:hover {
-      background: var(--shield-green-bg);
+      background: var(--seafoam-bg);
       color: #fff;
-      border-color: var(--shield-green);
+      border-color: var(--seafoam);
     }
 
     .btn-dock.primary-action {
       grid-column: span 2;
-      background: linear-gradient(135deg, #7a9c2d 0%, #93b93b 100%);
-      border: 1px solid var(--shield-green-light);
+      background: linear-gradient(135deg, #0f766e 0%, #14b8a6 50%, #2dd4bf 100%);
+      border: 1px solid var(--seafoam-light);
       color: #fff;
-      box-shadow: 0 2px 10px rgba(147, 185, 59, 0.35);
+      box-shadow: 0 2px 10px var(--seafoam-glow);
     }
   </style>
 </head>
@@ -1282,7 +1285,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       <!-- Simplified Quota Groups (Gemini & Claude) -->
       <div class="subhead-title">
         <span>AI Quotas & Windows</span>
-        <span style="font-size: 9px; color: var(--shield-green-light);">Shield Engine</span>
+        <span style="font-size: 9px; color: var(--seafoam-light);">Shield Engine</span>
       </div>
 
       ${renderQuotaCard(geminiGroup, 0)}
@@ -1316,7 +1319,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     <div id="tab-history" class="tab-content">
       <div class="subhead-title">
         <span>Conversations by Project</span>
-        <span style="font-size: 9px; color: var(--shield-green-light);">${conversations.length} Total Sessions</span>
+        <span style="font-size: 9px; color: var(--seafoam-light);">${conversations.length} Total Sessions</span>
       </div>
 
       ${projectsHtml || '<div style="opacity:0.6; text-align:center; padding:16px;">No conversation transcripts found</div>'}

@@ -23,19 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
   const autoSwitchService = AutoSwitchService.initialize(accountService, quotaService);
   context.subscriptions.push({ dispose: () => autoSwitchService.dispose() });
 
-  // 2. Initialize Tree & Webview Providers
-  const accountTreeProvider = new AccountTreeProvider(accountService);
-  vscode.window.registerTreeDataProvider(
-    'antigravity.views.accounts',
-    accountTreeProvider
-  );
-
-  const historyTreeProvider = new HistoryTreeProvider(conversationService);
-  vscode.window.registerTreeDataProvider(
-    'antigravity.views.conversations',
-    historyTreeProvider
-  );
-
+  // 2. Initialize Webview Provider (Single Unified View)
   const quotaWebviewProvider = new QuotaWebviewProvider(
     context.extensionUri,
     quotaService,
@@ -57,9 +45,8 @@ export function activate(context: vscode.ExtensionContext) {
   // 4. Register Commands
   context.subscriptions.push(
     vscode.commands.registerCommand('antigravityToolkit.refreshAll', () => {
-      accountTreeProvider.refresh();
-      historyTreeProvider.refresh();
       quotaService.notifyQuotasUpdated();
+      conversationService.refresh();
       vscode.window.showInformationMessage('Antigravity Toolkit telemetry refreshed.');
     })
   );
