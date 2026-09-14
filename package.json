@@ -9,7 +9,7 @@
     "url": "https://github.com/antigravity-hub/antigravity-toolkit-extension"
   },
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.80.0"
   },
   "categories": [
     "Productivity",
@@ -184,7 +184,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "1.80.0",
     "@vscode/vsce": "^2.30.0",
     "esbuild": "^0.21.5",
     "typescript": "^5.5.0"
