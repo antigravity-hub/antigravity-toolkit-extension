@@ -155,7 +155,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           window: '5h',
           remainingPercentage: rem,
           resetTimeMs: geminiQuota ? geminiQuota.resetTimeMs : defaultReset,
-          resetTimeFormatted: '04h 01m 35s',
+          resetTimeFormatted: '04h 01m',
           displayName: 'Five Hour Limit Remaining',
         },
         weeklyBucket: {
@@ -180,7 +180,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           window: '5h',
           remainingPercentage: rem,
           resetTimeMs: defaultReset,
-          resetTimeFormatted: '04h 01m 35s',
+          resetTimeFormatted: '04h 01m',
           displayName: 'Five Hour Limit Remaining',
         },
         weeklyBucket: {
@@ -206,12 +206,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         resetTimeFormatted: '6d left',
       };
 
+      const strokeColor = isGemini ? 'var(--quota-cyan)' : '#f97316';
+      const glowColor = isGemini ? 'rgba(6, 182, 212, 0.45)' : 'rgba(249, 115, 22, 0.4)';
+      const gradientFill = isGemini
+        ? 'linear-gradient(90deg, #0891b2, #38bdf8)'
+        : 'linear-gradient(90deg, #c2410c, #fb923c)';
+
       const radius = 28;
       const circumference = 2 * Math.PI * radius;
       const strokeDashoffset = circumference - (fiveHour.remainingPercentage / 100) * circumference;
 
       return `
-        <div class="quota-group-card ${isGemini ? 'group-card-active' : ''}" data-reset-ms="${fiveHour.resetTimeMs}">
+        <div class="quota-group-card ${isGemini ? 'group-gemini' : 'group-claude'}" data-reset-ms="${fiveHour.resetTimeMs}">
           <div class="group-header">
             <div class="group-title-col">
               <div class="group-name-row">
@@ -224,7 +230,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               </div>
               <span class="group-desc">${group.description || 'Enterprise AI Quota Pool'}</span>
             </div>
-            <span class="pill-shield">${fiveHour.remainingPercentage}% Capacity</span>
+            <span class="pill-capacity ${isGemini ? 'cap-cyan' : 'cap-orange'}">${fiveHour.remainingPercentage}% Capacity</span>
           </div>
 
           <div class="group-body">
@@ -237,33 +243,33 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                   cy="35"
                   r="${radius}"
                   style="
-                    stroke: var(--seafoam);
+                    stroke: ${strokeColor};
                     stroke-dasharray: ${circumference};
                     stroke-dashoffset: ${strokeDashoffset};
-                    filter: drop-shadow(0 0 8px var(--seafoam-glow));
+                    filter: drop-shadow(0 0 8px ${glowColor});
                   "
                 />
               </svg>
               <div class="radial-text">
-                <span class="radial-percent">${fiveHour.remainingPercentage}%</span>
+                <span class="radial-percent" style="color: ${strokeColor};">${fiveHour.remainingPercentage}%</span>
               </div>
             </div>
 
             <div class="group-details">
               <div class="metric-row">
                 <span class="metric-lbl">5h Rolling:</span>
-                <span class="metric-v val-green">${fiveHour.remainingPercentage}% left</span>
+                <span class="metric-v" style="color: ${strokeColor};">${fiveHour.remainingPercentage}% left</span>
               </div>
               <div class="metric-row">
                 <span class="metric-lbl">Resets in:</span>
-                <span class="metric-v val-ticker" id="countdown-${cardIdx}">${fiveHour.resetTimeFormatted}</span>
+                <span class="metric-v val-ticker" id="countdown-${cardIdx}">${fiveHour.resetTimeFormatted.replace(/\s*\d+s$/, '')}</span>
               </div>
               <div class="metric-row" style="margin-top: 4px;">
                 <span class="metric-lbl">Weekly Limit:</span>
                 <span class="metric-v">${weekly.remainingPercentage}% remaining</span>
               </div>
               <div class="mini-bar-bg">
-                <div class="mini-bar-fill" style="width: ${weekly.remainingPercentage}%; background: linear-gradient(90deg, var(--seafoam-dark), var(--seafoam));"></div>
+                <div class="mini-bar-fill" style="width: ${weekly.remainingPercentage}%; background: ${gradientFill};"></div>
               </div>
             </div>
           </div>
@@ -300,8 +306,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         // Sort sessions descending by date (newest first)
         sessions.sort((a, b) => b.updatedAt - a.updatedAt);
 
+        const formatLargeTokens = (val: number): string => {
+          if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1)}M`;
+          if (val >= 1_000) return `${(val / 1_000).toFixed(1)}k`;
+          return `${val}`;
+        };
+
         const totalTokens = sessions.reduce((sum, s) => sum + (s.tokenEstimate || 0), 0);
-        const tokensFormatted = totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : `${totalTokens}`;
+        const tokensFormatted = formatLargeTokens(totalTokens);
 
         const isCurrentProject = currentWorkspaceName && pName.toLowerCase().includes(currentWorkspaceName.toLowerCase());
         // Current project is open by default, other projects collapsed by default!
@@ -309,7 +321,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
         const timelineNodes = sessions
           .map((s, sIdx) => {
-            const tokens = s.tokenEstimate ? (s.tokenEstimate > 1000 ? `${(s.tokenEstimate / 1000).toFixed(1)}k tokens` : `${s.tokenEstimate} tokens`) : `${s.stepCount * 1.4}k tokens`;
+            const rawTokens = s.tokenEstimate || Math.round(s.stepCount * 1400);
+            const tokens = `${formatLargeTokens(rawTokens)} tokens`;
 
             // Friendly relative date tagging
             const diffDays = (nowTime - s.updatedAt) / oneDayMs;
@@ -431,8 +444,20 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       </div>
     `;
 
+    // Sort Accounts: Active first, then by health descending, 0% health accounts at bottom
+    const sortedAccounts = [...accounts].sort((a, b) => {
+      if (a.isActive) return -1;
+      if (b.isActive) return 1;
+      const hA = this.accountService.getAccountHealth(a);
+      const hB = this.accountService.getAccountHealth(b);
+      return hB - hA;
+    });
+
+    // Find the first standby (non-active) account that has health >= 80% to mark as Best Standby
+    const bestStandbyEmail = sortedAccounts.find((a) => !a.isActive && this.accountService.getAccountHealth(a) >= 80)?.email;
+
     // Compact, Clean Switchboard Rows
-    const accountCardsHtml = accounts
+    const accountCardsHtml = sortedAccounts
       .map((acc) => {
         const isActive = acc.isActive;
         const health = Math.round(this.accountService.getAccountHealth(acc));
@@ -440,29 +465,35 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         const usedTokens = accountUsageMap.get(acc.email.toLowerCase()) || 0;
         const usedFormatted = usedTokens > 0 ? formatTokenMetric(usedTokens) : '';
 
-        let healthColor = '#2dd4bf'; // Seafoam green
+        const isBestStandby = !isActive && acc.email === bestStandbyEmail;
+
+        let healthColor = '#10b981'; // Emerald
         let statusBadge = 'Ready';
         let statusClass = 'badge-ready';
 
         if (isActive) {
           statusBadge = 'Active in IDE';
           statusClass = 'badge-active-ide';
+        } else if (isBestStandby) {
+          healthColor = '#06b6d4'; // Cyan
+          statusBadge = '🏆 Best Standby';
+          statusClass = 'badge-best-standby';
         } else if (health === 0) {
           healthColor = '#f43f5e'; // Crimson Red
           statusBadge = 'Depleted';
           statusClass = 'badge-depleted';
         } else if (health <= 35) {
-          healthColor = '#fb923c'; // Orange
+          healthColor = '#f59e0b'; // Amber
           statusBadge = 'Low';
           statusClass = 'badge-low';
         } else if (health < 80) {
-          healthColor = '#38bdf8'; // Cyan
+          healthColor = '#06b6d4'; // Cyan
           statusBadge = 'Healthy';
           statusClass = 'badge-healthy';
         }
 
         return `
-        <div class="compact-account-row ${isActive ? 'row-active' : ''}">
+        <div class="compact-account-row ${isActive ? 'row-active' : ''} ${isBestStandby ? 'row-best-standby' : ''}">
           <div class="row-left">
             <div class="compact-avatar-wrapper">
               ${
@@ -513,12 +544,19 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       --seafoam: #2dd4bf;
       --seafoam-light: #5eead4;
       --seafoam-dark: #0f766e;
-      --seafoam-glow: rgba(45, 212, 191, 0.45);
-      --seafoam-bg: rgba(45, 212, 191, 0.12);
+      --seafoam-glow: rgba(45, 212, 191, 0.25);
+      --seafoam-bg: rgba(45, 212, 191, 0.08);
+      --emerald: #10b981;
+      --emerald-light: #34d399;
       --accent-cyan: #06b6d4;
+      --accent-cyan-light: #38bdf8;
+      --amber: #f59e0b;
+      --crimson: #f43f5e;
+      --violet: #a855f7;
       --bg-surface: #090d16;
-      --card-bg: rgba(15, 23, 42, 0.85);
-      --card-border: rgba(45, 212, 191, 0.22);
+      --card-bg: rgba(17, 24, 39, 0.85);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-border-hover: rgba(255, 255, 255, 0.16);
       --text-main: #f8fafc;
       --text-muted: #94a3b8;
     }
@@ -1109,9 +1147,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .compact-account-row.row-active {
-      border: 1px solid var(--seafoam);
-      background: rgba(45, 212, 191, 0.06);
-      box-shadow: 0 0 12px -2px var(--seafoam-glow);
+      border: 1px solid var(--emerald);
+      background: rgba(16, 185, 129, 0.08);
+      box-shadow: 0 0 14px -2px rgba(16, 185, 129, 0.35);
+    }
+
+    .compact-account-row.row-best-standby {
+      border: 1px solid rgba(6, 182, 212, 0.4);
+      background: rgba(6, 182, 212, 0.04);
     }
 
     .row-left {
@@ -1192,29 +1235,35 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .badge-active-ide {
-      background: rgba(45, 212, 191, 0.2);
-      color: var(--seafoam-light);
-      border: 1px solid var(--seafoam);
+      background: rgba(16, 185, 129, 0.18);
+      color: var(--emerald-light);
+      border: 1px solid var(--emerald);
+    }
+
+    .badge-best-standby {
+      background: rgba(6, 182, 212, 0.18);
+      color: var(--accent-cyan-light);
+      border: 1px solid var(--accent-cyan);
     }
 
     .badge-ready {
-      background: rgba(45, 212, 191, 0.12);
-      color: var(--seafoam-light);
+      background: rgba(16, 185, 129, 0.12);
+      color: var(--emerald-light);
     }
 
     .badge-healthy {
-      background: rgba(56, 189, 248, 0.15);
-      color: #38bdf8;
+      background: rgba(6, 182, 212, 0.15);
+      color: var(--accent-cyan-light);
     }
 
     .badge-low {
-      background: rgba(251, 146, 60, 0.15);
-      color: #fb923c;
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--amber);
     }
 
     .badge-depleted {
       background: rgba(244, 63, 94, 0.18);
-      color: #f43f5e;
+      color: var(--crimson);
       border: 1px solid rgba(244, 63, 94, 0.4);
     }
 
@@ -1874,9 +1923,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         const pad = (n) => (n < 10 ? '0' + n : '' + n);
         let formatted = '';
         if (hours > 0) {
-          formatted = pad(hours) + 'h ' + pad(minutes) + 'm ' + pad(seconds) + 's';
+          formatted = pad(hours) + 'h ' + pad(minutes) + 'm';
         } else {
-          formatted = pad(minutes) + 'm ' + pad(seconds) + 's';
+          formatted = pad(minutes) + 'm';
         }
 
         const el = document.getElementById('countdown-' + idx);
