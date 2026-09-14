@@ -43,6 +43,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         case 'switchAccount':
           if (message.email) {
             await this.accountService.switchAccount(message.email);
+            this.updateWebview();
           }
           break;
         case 'syncShield':

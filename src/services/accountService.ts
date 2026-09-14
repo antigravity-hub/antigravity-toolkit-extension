@@ -111,18 +111,27 @@ export class AccountService {
     }
     await this.persistAccounts();
 
-    // Hot-swap in Language Server memory
+    // Hot-swap attempt in Language Server memory
     const lsClient = LanguageServerClient.getInstance();
-    const lsSuccess = await lsClient.registerUserInMemory(target);
+    await lsClient.registerUserInMemory(target);
 
-    // Notify local Shield daemon & sync files
+    // Notify local Shield daemon & sync credentials with real UUID and Auth
     const shield = ShieldBridge.getInstance();
-    await shield.notifyShieldSwitch(email);
+    const switchResult = await shield.notifyShieldSwitch(email, target.id);
 
-    if (lsSuccess) {
-      vscode.window.showInformationMessage(`Active account switched to: ${email}`);
+    if (switchResult.handledByShield) {
+      vscode.window.showInformationMessage(
+        `⚡ Switching to ${email}... Antigravity Shield is reloading the IDE session.`
+      );
     } else {
-      vscode.window.showInformationMessage(`Active account set to: ${email}`);
+      const choice = await vscode.window.showInformationMessage(
+        `Active account credentials set to ${email}. Reload window to apply now?`,
+        'Reload Window',
+        'Later'
+      );
+      if (choice === 'Reload Window') {
+        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      }
     }
 
     return true;

@@ -306,43 +306,94 @@ export class ShieldBridge {
   }
 
   /**
+   * Resolves the account UUID by email from Shield's local accounts.json.
+   */
+  public resolveAccountIdByEmail(email: string): string | undefined {
+    try {
+      const home = os.homedir();
+      const accountsJsonPath = path.join(home, '.antigravity_shield', 'accounts.json');
+      if (fs.existsSync(accountsJsonPath)) {
+        const index = JSON.parse(fs.readFileSync(accountsJsonPath, 'utf8'));
+        const found = index.accounts?.find(
+          (a: any) => a.email.toLowerCase() === email.toLowerCase()
+        );
+        if (found) return found.id;
+      }
+    } catch {
+      // ignore
+    }
+    return undefined;
+  }
+
+  /**
    * Notifies Shield that an account switch was triggered from the IDE,
+   * passes the authentic account UUID with Bearer token authentication,
    * and synchronizes local configuration files (~/.antigravity_shield & ~/.gemini).
    */
-  public async notifyShieldSwitch(email: string): Promise<boolean> {
+  public async notifyShieldSwitch(
+    email: string,
+    accountId?: string
+  ): Promise<{ success: boolean; handledByShield: boolean }> {
     const baseUrl = await this.getBaseUrl();
-    const endpoints = ['/api/toolkit/switch', '/toolkit/switch', '/api/switch', '/api/accounts/switch'];
-    const body = JSON.stringify({ email, account_id: email, target_ide: 'ide' });
+    const apiKey = this.getShieldApiKey();
+    const targetUuid = accountId || this.resolveAccountIdByEmail(email) || email;
+
+    const payload = {
+      accountId: targetUuid,
+      account_id: targetUuid,
+      email: email,
+      target_ide: 'ide',
+    };
+    const body = JSON.stringify(payload);
+
+    const endpoints = [
+      '/api/accounts/switch',
+      '/accounts/switch',
+      '/api/toolkit/switch',
+      '/toolkit/switch',
+      '/api/switch',
+    ];
+
+    let handledByShield = false;
 
     for (const ep of endpoints) {
       try {
-        const ok = await new Promise<boolean>((resolve) => {
+        const statusCode = await new Promise<number>((resolve) => {
           const url = new URL(ep, baseUrl);
+          const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body).toString(),
+          };
+          if (apiKey) {
+            headers['Authorization'] = `Bearer ${apiKey}`;
+          }
+
           const req = http.request(
             url,
             {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(body),
-              },
-              timeout: 2000,
+              headers,
+              timeout: 3000,
             },
-            (res) => resolve(res.statusCode === 200 || res.statusCode === 202)
+            (res) => resolve(res.statusCode || 0)
           );
 
-          req.on('error', () => resolve(false));
+          req.on('error', () => resolve(0));
           req.on('timeout', () => {
             req.destroy();
-            resolve(false);
+            resolve(0);
           });
 
           req.write(body);
           req.end();
         });
-        if (ok) break;
+
+        if (statusCode >= 200 && statusCode < 300) {
+          handledByShield = true;
+          break;
+        }
       } catch {
-        // ignore
+        // try next endpoint
       }
     }
 
@@ -353,7 +404,9 @@ export class ShieldBridge {
       const accountsJsonPath = path.join(shieldDir, 'accounts.json');
       if (fs.existsSync(accountsJsonPath)) {
         const index = JSON.parse(fs.readFileSync(accountsJsonPath, 'utf8'));
-        const target = index.accounts.find((a: any) => a.email.toLowerCase() === email.toLowerCase());
+        const target = index.accounts.find(
+          (a: any) => a.email.toLowerCase() === email.toLowerCase() || a.id === targetUuid
+        );
         if (target) {
           index.active_ide_account_id = target.id;
           index.current_account_id = target.id;
@@ -391,7 +444,7 @@ export class ShieldBridge {
       // ignore
     }
 
-    return true;
+    return { success: true, handledByShield };
   }
 
   /**
