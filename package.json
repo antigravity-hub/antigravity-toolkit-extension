@@ -123,7 +123,7 @@
       "properties": {
         "antigravityToolkit.shieldApiUrl": {
           "type": "string",
-          "default": "http://127.0.0.1:8765",
+          "default": "http://127.0.0.1:8045",
           "description": "Local Antigravity Shield API base URL."
         },
         "antigravityToolkit.quotaRefreshIntervalSeconds": {
