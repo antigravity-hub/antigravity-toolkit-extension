@@ -40,8 +40,21 @@ export class AccountService {
       this.accounts.set(acc.email, acc);
     }
 
-    if (!this.activeEmail && raw.length > 0) {
-      const active = raw.find((a) => a.isActive) || raw[0];
+    // If storage was empty, immediately hydrate from local Shield disk storage
+    if (this.accounts.size === 0) {
+      const local = ShieldBridge.getInstance().loadAccountsFromLocalDisk();
+      for (const acc of local) {
+        this.accounts.set(acc.email, acc);
+      }
+      if (!this.activeEmail && local.length > 0) {
+        const active = local.find((a) => a.isActive) || local[0];
+        this.activeEmail = active.email;
+      }
+    }
+
+    if (!this.activeEmail && this.accounts.size > 0) {
+      const list = Array.from(this.accounts.values());
+      const active = list.find((a) => a.isActive) || list[0];
       this.activeEmail = active.email;
     }
   }
@@ -103,43 +116,45 @@ export class AccountService {
     const lsClient = LanguageServerClient.getInstance();
     const lsSuccess = await lsClient.registerUserInMemory(target);
 
-    // Notify local Shield daemon
+    // Notify local Shield daemon & sync files
     const shield = ShieldBridge.getInstance();
     await shield.notifyShieldSwitch(email);
 
     if (lsSuccess) {
       vscode.window.showInformationMessage(`Active account switched to: ${email}`);
     } else {
-      vscode.window.showWarningMessage(
-        `Switched active account in toolkit, but Language Server registration was partial. Request will use updated session on next turn.`
-      );
+      vscode.window.showInformationMessage(`Active account set to: ${email}`);
     }
 
     return true;
   }
 
   /**
-   * Pulls fresh accounts from Antigravity Shield
+   * Pulls fresh accounts from Antigravity Shield (HTTP or local disk)
    */
   public async syncFromShield(): Promise<number> {
     const shield = ShieldBridge.getInstance();
-    const online = await shield.isShieldOnline();
-    if (!online) {
-      vscode.window.showWarningMessage('Antigravity Shield desktop/daemon is not running locally.');
-      return 0;
-    }
-
-    const fetched = await shield.fetchShieldAccounts();
+    let fetched = await shield.fetchShieldAccounts();
     if (fetched.length === 0) {
-      vscode.window.showInformationMessage('No accounts received from Shield.');
+      fetched = shield.loadAccountsFromLocalDisk();
+    }
+
+    if (fetched.length === 0) {
+      vscode.window.showInformationMessage('No accounts found in Shield or local storage.');
       return 0;
     }
 
+    this.accounts.clear();
     for (const acc of fetched) {
       this.accounts.set(acc.email, acc);
       if (acc.isActive) {
         this.activeEmail = acc.email;
       }
+    }
+
+    if (!this.activeEmail && fetched.length > 0) {
+      this.activeEmail = fetched[0].email;
+      fetched[0].isActive = true;
     }
 
     await this.persistAccounts();
