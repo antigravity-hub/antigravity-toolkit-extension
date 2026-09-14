@@ -3,7 +3,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { Account, ModelQuota } from '../types';
+import { Account, ModelQuota, TokenUsageStats } from '../types';
 
 export class ShieldBridge {
   private static instance: ShieldBridge;
@@ -466,5 +466,104 @@ export class ShieldBridge {
       }
     }
     return false;
+  }
+
+  /**
+   * Helper to make authenticated HTTP GET calls to Shield API endpoints.
+   */
+  public async fetchShieldApi<T>(apiPath: string): Promise<T | null> {
+    try {
+      const baseUrl = await this.getBaseUrl();
+      const url = new URL(apiPath, baseUrl);
+      const apiKey = this.getShieldApiKey();
+      const headers: Record<string, string> = {
+        'Accept': 'application/json',
+      };
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+        headers['x-api-key'] = apiKey;
+      }
+
+      return new Promise<T | null>((resolve) => {
+        const req = http.get(url, { headers, timeout: 2000 }, (res) => {
+          if (res.statusCode !== 200) {
+            resolve(null);
+            return;
+          }
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(data));
+            } catch {
+              resolve(null);
+            }
+          });
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => {
+          req.destroy();
+          resolve(null);
+        });
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fetches real-time token consumption metrics from Shield daemon.
+   */
+  public async getTokenStats(): Promise<TokenUsageStats | null> {
+    try {
+      const summary = await this.fetchShieldApi<any>('/api/stats/token/summary');
+      if (!summary) return null;
+
+      const [byAccount, byModel, daily] = await Promise.all([
+        this.fetchShieldApi<any[]>('/api/stats/token/by-account'),
+        this.fetchShieldApi<any[]>('/api/stats/token/by-model'),
+        this.fetchShieldApi<any[]>('/api/stats/token/daily'),
+      ]);
+
+      let todayTokens = 0;
+      if (Array.isArray(daily) && daily.length > 0) {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const todayEntry = daily.find((d: any) => d.period === todayStr);
+        if (todayEntry && typeof todayEntry.total_tokens === 'number') {
+          todayTokens = todayEntry.total_tokens;
+        } else {
+          todayTokens = daily[daily.length - 1]?.total_tokens || 0;
+        }
+      }
+
+      return {
+        totalTokens: summary.total_tokens || 0,
+        totalInputTokens: summary.total_input_tokens || 0,
+        totalOutputTokens: summary.total_output_tokens || 0,
+        totalCachedTokens: summary.total_cached_tokens || 0,
+        totalRequests: summary.total_requests || 0,
+        uniqueAccounts: summary.unique_accounts || 0,
+        todayTokens,
+        byAccount: Array.isArray(byAccount)
+          ? byAccount.map((a: any) => ({
+              accountEmail: a.account_email || '',
+              totalInputTokens: a.total_input_tokens || 0,
+              totalOutputTokens: a.total_output_tokens || 0,
+              totalCachedTokens: a.total_cached_tokens || 0,
+              totalTokens: a.total_tokens || 0,
+              requestCount: a.request_count || 0,
+            }))
+          : [],
+        byModel: Array.isArray(byModel)
+          ? byModel.map((m: any) => ({
+              model: m.model || '',
+              totalTokens: m.total_tokens || 0,
+              requestCount: m.request_count || 0,
+            }))
+          : [],
+      };
+    } catch {
+      return null;
+    }
   }
 }

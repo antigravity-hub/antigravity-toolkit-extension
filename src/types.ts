@@ -68,3 +68,31 @@ export interface ConversationSession {
   projectName?: string;
   tokenEstimate?: number;
 }
+
+export interface AccountTokenUsage {
+  accountEmail: string;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCachedTokens: number;
+  totalTokens: number;
+  requestCount: number;
+}
+
+export interface ModelTokenUsage {
+  model: string;
+  totalTokens: number;
+  requestCount: number;
+}
+
+export interface TokenUsageStats {
+  totalTokens: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCachedTokens: number;
+  totalRequests: number;
+  uniqueAccounts: number;
+  todayTokens?: number;
+  byAccount: AccountTokenUsage[];
+  byModel: ModelTokenUsage[];
+}
+
