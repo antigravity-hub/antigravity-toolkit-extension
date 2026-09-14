@@ -17,7 +17,7 @@ export class QuotaService {
   }
 
   /**
-   * Returns current active account quotas or synthesizes real-time models list.
+   * Generates or extracts active model quota slots with refreshed countdowns.
    */
   public async getActiveQuotas(): Promise<ModelQuota[]> {
     const accountService = AccountService.getInstance();
@@ -26,7 +26,13 @@ export class QuotaService {
       return [];
     }
 
-    // Default simulated or fetched model quota slots
+    return this.getAccountQuotas(active);
+  }
+
+  /**
+   * Returns models and live countdowns for a given account.
+   */
+  public getAccountQuotas(account: Account): ModelQuota[] {
     const now = Date.now();
     const fiveHoursFromNow = now + 5 * 60 * 60 * 1000;
 
@@ -73,16 +79,31 @@ export class QuotaService {
       },
     ];
 
-    return active.quotas && active.quotas.length > 0 ? active.quotas : defaultModels;
+    const source = account.quotas && account.quotas.length > 0 ? account.quotas : defaultModels;
+
+    // Refresh formatted countdown
+    return source.map((q) => {
+      const remainingTime = Math.max(0, (q.resetTimeMs || fiveHoursFromNow) - now);
+      return {
+        ...q,
+        remainingQuota: typeof q.remainingQuota === 'number' ? q.remainingQuota : Math.max(0, 100 - q.usagePercentage),
+        resetTimeFormatted: this.formatCountdown(remainingTime),
+      };
+    });
   }
 
   public formatCountdown(durationMs: number): string {
-    const hours = Math.floor(durationMs / (1000 * 60 * 60));
-    const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+    const totalSeconds = Math.floor(durationMs / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+
     if (hours > 0) {
-      return `${hours}h ${minutes}m`;
+      return `${pad(hours)}h ${pad(minutes)}m`;
     }
-    return `${minutes}m`;
+    return `${pad(minutes)}m ${pad(seconds)}s`;
   }
 
   public notifyQuotasUpdated(): void {

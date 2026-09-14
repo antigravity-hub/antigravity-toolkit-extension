@@ -130,6 +130,61 @@ export class AccountService {
   }
 
   /**
+   * Calculates a composite health score (0-100) for an account based on remaining quota across models.
+   */
+  public getAccountHealth(account: Account): number {
+    if (!account.quotas || account.quotas.length === 0) {
+      return 100;
+    }
+
+    const totalRemaining = account.quotas.reduce((sum, q) => {
+      const remaining = typeof q.remainingQuota === 'number'
+        ? q.remainingQuota
+        : Math.max(0, 100 - q.usagePercentage);
+      return sum + remaining;
+    }, 0);
+
+    const average = totalRemaining / account.quotas.length;
+    let tierBonus = 0;
+    const tierLower = (account.tier || '').toLowerCase();
+    if (tierLower.includes('ultra')) tierBonus = 5;
+    else if (tierLower.includes('pro')) tierBonus = 2;
+
+    return Math.min(100, Math.max(0, average + tierBonus));
+  }
+
+  /**
+   * Evaluates all standby accounts and picks the best one for auto-rotation.
+   */
+  public getBestNextAccount(excludeEmail?: string): { account: Account; healthScore: number } | null {
+    const list = this.getAccounts().filter((a) => {
+      if (excludeEmail && a.email.toLowerCase() === excludeEmail.toLowerCase()) {
+        return false;
+      }
+      return true;
+    });
+
+    if (list.length === 0) {
+      return null;
+    }
+
+    const scored = list.map((account) => ({
+      account,
+      healthScore: this.getAccountHealth(account),
+    }));
+
+    // Sort descending by health score
+    scored.sort((a, b) => b.healthScore - a.healthScore);
+
+    // Pick top candidate if healthy (> 5% quota available)
+    if (scored.length > 0 && scored[0].healthScore > 5) {
+      return scored[0];
+    }
+
+    return null;
+  }
+
+  /**
    * Pulls fresh accounts from Antigravity Shield (HTTP or local disk)
    */
   public async syncFromShield(): Promise<number> {

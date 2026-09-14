@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { AccountService } from './services/accountService';
 import { QuotaService } from './services/quotaService';
 import { ConversationService } from './services/conversationService';
+import { AutoSwitchService } from './services/autoSwitchService';
 import { AccountTreeProvider } from './providers/accountTreeProvider';
 import { HistoryTreeProvider } from './providers/historyTreeProvider';
 import { QuotaWebviewProvider } from './providers/quotaWebviewProvider';
@@ -13,12 +14,14 @@ let quotaIntervalTimer: NodeJS.Timeout | undefined;
 let heartbeatTimer: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-  console.log('[Antigravity Toolkit] Activating extension...');
+  console.log('[Antigravity Toolkit 2.0] Activating extension...');
 
   // 1. Initialize core services
   const accountService = AccountService.initialize(context);
   const quotaService = QuotaService.getInstance();
   const conversationService = ConversationService.getInstance();
+  const autoSwitchService = AutoSwitchService.initialize(accountService, quotaService);
+  context.subscriptions.push({ dispose: () => autoSwitchService.dispose() });
 
   // 2. Initialize Tree & Webview Providers
   const accountTreeProvider = new AccountTreeProvider(accountService);
@@ -36,7 +39,8 @@ export function activate(context: vscode.ExtensionContext) {
   const quotaWebviewProvider = new QuotaWebviewProvider(
     context.extensionUri,
     quotaService,
-    accountService
+    accountService,
+    autoSwitchService
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -45,8 +49,8 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
-  // 3. Status Bar
-  const statusBar = new StatusBarManager(accountService, quotaService);
+  // 3. Status Bar HUD
+  const statusBar = new StatusBarManager(accountService, quotaService, autoSwitchService);
   context.subscriptions.push(statusBar);
 
   // 4. Register Commands
@@ -55,7 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
       accountTreeProvider.refresh();
       historyTreeProvider.refresh();
       quotaService.notifyQuotasUpdated();
-      vscode.window.showInformationMessage('Antigravity Toolkit refreshed.');
+      vscode.window.showInformationMessage('Antigravity Toolkit telemetry refreshed.');
     })
   );
 
@@ -84,12 +88,15 @@ export function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        const items = accounts.map((acc) => ({
-          label: acc.email,
-          description: acc.isActive ? '$(check) Active' : acc.tier || 'Ready',
-          detail: `ID: ${acc.id} | Tier: ${acc.tier || 'Free'}`,
-          account: acc,
-        }));
+        const items = accounts.map((acc) => {
+          const health = Math.round(accountService.getAccountHealth(acc));
+          return {
+            label: acc.email,
+            description: acc.isActive ? '$(check) Active' : `[${health}% Quota Ready]`,
+            detail: `Plan: ${acc.tier || 'Google AI Pro'} • Health: ${health}%`,
+            account: acc,
+          };
+        });
 
         const selected = await vscode.window.showQuickPick(items, {
           placeHolder: 'Select an Antigravity account to switch into (Zero restart)',
@@ -137,6 +144,22 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand('antigravityToolkit.toggleAutoSwitch', async () => {
+      const current = autoSwitchService.isEnabled();
+      await autoSwitchService.setEnabled(!current);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('antigravityToolkit.triggerAutoRotate', async () => {
+      const rotated = await autoSwitchService.evaluateQuotasAndRotateIfNeeded();
+      if (!rotated) {
+        vscode.window.showInformationMessage('Current session quota is healthy (>2%). No rotation needed.');
+      }
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand(
       'antigravityToolkit.openConversation',
       async (session?: ConversationSession) => {
@@ -176,7 +199,7 @@ export function activate(context: vscode.ExtensionContext) {
     accountService.syncFromShield().catch(() => {});
   }, 2000);
 
-  console.log('[Antigravity Toolkit] Activated successfully.');
+  console.log('[Antigravity Toolkit 2.0] Activated successfully.');
 }
 
 export function deactivate() {

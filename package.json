@@ -1,8 +1,8 @@
 {
   "name": "antigravity-toolkit",
   "displayName": "Antigravity Toolkit",
-  "description": "The all-in-one IDE toolkit for Antigravity: visual conversation history, quota analytics, and instant live account switching.",
-  "version": "1.0.1",
+  "description": "Next-Gen IDE HUD for Google Antigravity: Cyber-Glass quota telemetry, autonomous multi-account rotation, and instant live session switching.",
+  "version": "2.0.0",
   "publisher": "antigravity-hub",
   "repository": {
     "type": "git",
@@ -90,6 +90,18 @@
         "title": "Open Full Quota Dashboard",
         "category": "Antigravity Toolkit",
         "icon": "$(dashboard)"
+      },
+      {
+        "command": "antigravityToolkit.toggleAutoSwitch",
+        "title": "Toggle Smart Auto-Rotate",
+        "category": "Antigravity Toolkit",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "antigravityToolkit.triggerAutoRotate",
+        "title": "Evaluate & Auto-Rotate Now",
+        "category": "Antigravity Toolkit",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
@@ -97,6 +109,11 @@
         {
           "command": "antigravityToolkit.refreshAll",
           "when": "view =~ /^antigravity\\.views\\./",
+          "group": "navigation"
+        },
+        {
+          "command": "antigravityToolkit.toggleAutoSwitch",
+          "when": "view == antigravity.views.quota",
           "group": "navigation"
         },
         {
@@ -135,6 +152,26 @@
           "type": "boolean",
           "default": true,
           "description": "Show the active account and quota indicator in the IDE status bar."
+        },
+        "antigravityToolkit.autoSwitch.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically switch to the best standby account when active quota drops below threshold."
+        },
+        "antigravityToolkit.autoSwitch.quotaThresholdPercent": {
+          "type": "number",
+          "default": 2,
+          "description": "Remaining quota percentage (1-10%) that triggers autonomous account rotation."
+        },
+        "antigravityToolkit.autoSwitch.cooldownMinutes": {
+          "type": "number",
+          "default": 3,
+          "description": "Cooldown period in minutes between automated switches to prevent rapid oscillation."
+        },
+        "antigravityToolkit.autoSwitch.notifyOnSwitch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Display a notification toast when an account is automatically rotated."
         }
       }
     }

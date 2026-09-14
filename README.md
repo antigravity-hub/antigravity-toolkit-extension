@@ -8,25 +8,30 @@
 
 ---
 
-## 🌟 Key Features
+## 🌟 Key Features (v2.0)
 
-### ⚡ 1. Zero-Restart Live Account Switcher
-- **Instant Hot-Swap**: Switches active Google / Antigravity accounts directly in Language Server memory via internal IPC.
-- **No Window Reboots**: Say goodbye to closing and relaunching your editor just to change credentials.
-- **Readiness Gate**: Kubernetes-style probe verifies Language Server availability before dispatching tokens, preventing stale-credential 401s.
+### ⚡ 1. Autonomous Smart Account Rotation Engine (New in v2.0)
+- **Zero-Touch Session Switcher**: Automatically switches to the highest-quota standby account whenever the active session drops below 1–2% remaining quota, or the 5-hour rolling reset window reaches expiration.
+- **Anti-Thrashing Cooldown**: Built-in 3-minute hysteresis protection to ensure smooth workflow transitions without session ping-ponging.
+- **Background Quota Sentinel**: Continuously evaluates multi-account telemetry every 30 seconds and notifies you seamlessly when rotation happens.
 
-### 📜 2. Visual Conversation History & Transcript Inspector
+### 🌌 2. Cyber-Glass Obsidian HUD & Live Radial Gauges
+- **Awwwards/Linear-Grade Aesthetic**: Obsidian dark surfaces (`#0a0d14`), double-bezel concentric cards, and luminous cyan/emerald/amber/ruby neon accents.
+- **Animated Radial SVG Rings**: Real-time progress meters with animated glowing stroke filters for each model (Gemini 3.7 Flash, Thinking, Pro).
+- **DOM Live Countdown Tickers**: Second-by-second countdown clock ticking down to exact 5-hour rolling and weekly recovery points.
+- **Animated Micro-Interactions**: Dynamic reactor SVG cores, radar sweep beacon, and haptic button physics.
+
+### 🔄 3. Multi-Session Switchboard Cards
+- **Instant 1-Click Hot-Swap**: Switches active Google / Antigravity accounts directly in Language Server memory via internal IPC without restarting your IDE window.
+- **Live Health Capacity Bars**: Immediate visual indication of each account's aggregated capacity and standby status (Active ⚡, Ready 🟢, Low 🟡, Depleted 🔴).
+
+### 📜 4. Visual Conversation History & Transcript Inspector
 - **Session Explorer**: Browse past conversations directly in the IDE sidebar, grouped chronologically with step counts and previews.
 - **Deep Thought Tracing**: Inspect internal `<thought>` reasoning blocks and agent trajectories.
 - **1-Click Open**: Launch full `.jsonl` transcripts directly inside the editor.
 
-### 📊 3. Live Quota & Token Budget Dashboard
-- **Model Meters**: Color-coded progress bars for Gemini 3.7 Flash, Pro, and Thinking variants.
-- **Reset Countdown Timers**: Real-time tracking of 5-hour rolling recovery and weekly usage limits.
-- **Status Bar Integration**: Keeps your active account email and quota availability in plain sight.
-
-### 🛡️ 4. Seamless Antigravity Shield Sync
-- Automatically detects your local [Antigravity Shield](https://github.com/antigravity-hub/Antigravity-Shield) daemon on `http://127.0.0.1:8765`.
+### 🛡️ 5. Seamless Antigravity Shield Sync
+- Automatically detects your local [Antigravity Shield](https://github.com/antigravity-hub/Antigravity-Shield) daemon on `http://127.0.0.1:8045` or `8765`.
 - 1-click synchronization of your accounts pool, proxy routing, and quotas.
 
 ---
