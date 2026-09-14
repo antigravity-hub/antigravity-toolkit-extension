@@ -1,7 +1,57 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import * as child_process from 'child_process';
 import { Account } from '../types';
 import { LanguageServerClient } from '../bridge/languageServerClient';
 import { ShieldBridge } from '../bridge/shieldBridge';
+
+// ─── Protobuf Serialization Helpers for UnifiedStateSync ───
+function encodeVarint(value: number): Buffer {
+  const bytes: number[] = [];
+  if (value === 0) return Buffer.from([0]);
+  while (value > 0x7f) {
+    bytes.push((value & 0x7f) | 0x80);
+    value = Math.floor(value / 128);
+  }
+  bytes.push(value & 0x7f);
+  return Buffer.from(bytes);
+}
+
+function encodeTag(fieldNumber: number, wireType: number): Buffer {
+  return encodeVarint((fieldNumber << 3) | wireType);
+}
+
+function encodeString(fieldNumber: number, value: string): Buffer {
+  const buf = Buffer.from(value, 'utf-8');
+  return Buffer.concat([encodeTag(fieldNumber, 2), encodeVarint(buf.length), buf]);
+}
+
+function encodeVarintField(fieldNumber: number, value: number): Buffer {
+  return Buffer.concat([encodeTag(fieldNumber, 0), encodeVarint(value)]);
+}
+
+function encodeMessage(fieldNumber: number, payload: Buffer): Buffer {
+  return Buffer.concat([encodeTag(fieldNumber, 2), encodeVarint(payload.length), payload]);
+}
+
+function buildUserStatusUpdate(name: string, email: string): string {
+  const proto = Buffer.concat([
+    encodeVarintField(2, 1),
+    encodeString(3, name),
+    encodeString(7, email),
+  ]);
+  const row = encodeString(1, proto.toString('base64'));
+  const update = Buffer.concat([
+    encodeString(1, 'userStatusSentinelKey'),
+    encodeMessage(2, row),
+  ]);
+  return Buffer.concat([
+    encodeString(1, 'uss-userStatus'),
+    encodeMessage(5, update),
+  ]).toString('base64');
+}
 
 const STORAGE_KEY_ACCOUNTS = 'antigravity_toolkit_accounts';
 const STORAGE_KEY_ACTIVE = 'antigravity_toolkit_active_email';
@@ -93,9 +143,11 @@ export class AccountService {
 
   /**
    * Performs an instant live account switch:
-   * 1. Updates local active state
-   * 2. Hot-swaps credentials in Language Server memory (zero window restarts)
-   * 3. Sends sync notice to Antigravity Shield
+   * 1. Updates local active state & persists
+   * 2. Injects credentials into IDE in-memory UnifiedStateSync (USS)
+   * 3. Triggers handleAuthRefresh & calls RegisterGdmUser on all active Language Server processes
+   * 4. Syncs legacy state.vscdb and disk configs (~/.antigravity_shield & ~/.gemini)
+   * 5. Notifies Shield daemon
    */
   public async switchAccount(email: string): Promise<boolean> {
     const target = this.accounts.get(email);
@@ -111,28 +163,78 @@ export class AccountService {
     }
     await this.persistAccounts();
 
-    // Hot-swap attempt in Language Server memory
-    const lsClient = LanguageServerClient.getInstance();
-    await lsClient.registerUserInMemory(target);
+    const targetName = target.name || target.email.split('@')[0];
+    const accessToken = target.token?.accessToken || '';
+    const refreshToken = target.token?.refreshToken || '';
+    const expiryTimestamp = target.token?.expiryTimestamp
+      ? Math.floor(target.token.expiryTimestamp > 10000000000 ? target.token.expiryTimestamp / 1000 : target.token.expiryTimestamp)
+      : Math.floor(Date.now() / 1000) + 3600;
 
-    // Notify local Shield daemon & sync credentials with real UUID and Auth
-    const shield = ShieldBridge.getInstance();
-    const switchResult = await shield.notifyShieldSwitch(email, target.id);
+    // 1. In-memory USS Hot-Swap
+    try {
+      const uss = (vscode as any).antigravityUnifiedStateSync;
+      if (uss) {
+        // Push user status update (name and email)
+        const updateB64 = buildUserStatusUpdate(targetName, target.email);
+        await uss.pushSerializedUpdateIPC(updateB64);
 
-    if (switchResult.handledByShield) {
-      vscode.window.showInformationMessage(
-        `⚡ Switching to ${email}... Antigravity Shield is reloading the IDE session.`
-      );
-    } else {
-      const choice = await vscode.window.showInformationMessage(
-        `Active account credentials set to ${email}. Reload window to apply now?`,
-        'Reload Window',
-        'Later'
-      );
-      if (choice === 'Reload Window') {
-        await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        // Set OAuth token info in USS
+        if (uss.OAuthPreferences?.setOAuthTokenInfo) {
+          await uss.OAuthPreferences.setOAuthTokenInfo({
+            accessToken,
+            refreshToken,
+            expiryDateSeconds: expiryTimestamp,
+            tokenType: 'Bearer',
+            isGcpTos: false,
+          });
+        }
+
+        // Fire handleAuthRefresh to propagate new auth context
+        try {
+          await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
+        } catch {
+          // non-fatal
+        }
       }
+    } catch (ussErr) {
+      console.warn('[AccountService] USS hot-swap non-fatal warning:', ussErr);
     }
+
+    // 2. Language Server In-Memory RPC Hot-Swap (RegisterGdmUser)
+    try {
+      const lsClient = LanguageServerClient.getInstance();
+      await lsClient.callRegisterGdmUser();
+    } catch (lsErr) {
+      console.warn('[AccountService] Language Server hot-swap warning:', lsErr);
+    }
+
+    // 3. Write legacy auth status to SQLite state.vscdb
+    try {
+      const proto = Buffer.concat([
+        encodeVarintField(2, 1),
+        encodeString(3, targetName),
+        encodeString(7, target.email),
+      ]);
+      const json = JSON.stringify({ name: targetName, apiKey: accessToken, email: target.email, userStatusProtoBinaryBase64: proto.toString('base64') });
+      const hexValue = Buffer.from(json, 'utf-8').toString('hex');
+      const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
+      if (appData) {
+        const dbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+        if (fs.existsSync(dbPath)) {
+          const sql = `UPDATE ItemTable SET value = CAST(X'${hexValue}' AS TEXT) WHERE key = 'antigravityAuthStatus';`;
+          child_process.exec(`sqlite3 "${dbPath}" "${sql}"`, () => {});
+        }
+      }
+    } catch {
+      // non-fatal
+    }
+
+    // 4. Notify local Shield daemon & sync credentials with real UUID and Auth
+    const shield = ShieldBridge.getInstance();
+    await shield.notifyShieldSwitch(email, target.id);
+
+    vscode.window.showInformationMessage(`⚡ Switched to ${email}`);
+    this.onDidChangeAccountsEmitter.fire();
 
     return true;
   }

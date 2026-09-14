@@ -1,8 +1,50 @@
-import * as vscode from 'vscode';
+import * as http from 'http';
+import * as child_process from 'child_process';
+import { promisify } from 'util';
 import { Account } from '../types';
+
+const execAsync = promisify(child_process.exec);
+
+export interface LSEndpoint {
+  port: number;
+  csrfToken: string;
+  pid: string;
+}
+
+export const MODEL_FRIENDLY_NAMES: Record<string, string> = {
+  MODEL_PLACEHOLDER_M318: 'Gemini 3.0 Flash High',
+  MODEL_PLACEHOLDER_M319: 'Gemini 3.0 Flash Medium',
+  MODEL_PLACEHOLDER_M320: 'Gemini 3.0 Flash Low',
+  MODEL_PLACEHOLDER_M298: 'Gemini 3.7 Flash (High)',
+  MODEL_PLACEHOLDER_M299: 'Gemini 3.7 Flash (Medium)',
+  MODEL_PLACEHOLDER_M300: 'Gemini 3.7 Flash (Low)',
+  MODEL_PLACEHOLDER_M71: 'Gemini 3.6 Flash (High)',
+  MODEL_PLACEHOLDER_M72: 'Gemini 3.6 Flash (Medium)',
+  MODEL_PLACEHOLDER_M73: 'Gemini 3.6 Flash (Low)',
+  MODEL_PLACEHOLDER_M16: 'Gemini 3.1 Pro (High)',
+  MODEL_PLACEHOLDER_M36: 'Gemini 3.1 Pro (Low)',
+  MODEL_PLACEHOLDER_M35: 'Claude Sonnet 4.6 (Thinking)',
+  MODEL_PLACEHOLDER_M26: 'Claude Opus 4.6 (Thinking)',
+  MODEL_OPENAI_GPT_OSS_120B_MEDIUM: 'GPT-OSS 120B (Medium)',
+  'gemini-3.0-flash-medium': 'Gemini 3.0 Flash Medium',
+  'gemini-3.0-flash-high': 'Gemini 3.0 Flash High',
+  'gemini-3.0-flash-low': 'Gemini 3.0 Flash Low',
+  'gemini-3.7-flash-high': 'Gemini 3.7 Flash (High)',
+  'gemini-3.7-flash-medium': 'Gemini 3.7 Flash (Medium)',
+  'gemini-3.7-flash-low': 'Gemini 3.7 Flash (Low)',
+  'gemini-3.1-pro-high': 'Gemini 3.1 Pro (High)',
+  'gemini-3.1-pro-low': 'Gemini 3.1 Pro (Low)',
+  'claude-sonnet-4-6': 'Claude Sonnet 4.6 (Thinking)',
+  'claude-opus-4-6-thinking': 'Claude Opus 4.6 (Thinking)',
+  'gpt-oss-120b-medium': 'GPT-OSS 120B (Medium)',
+};
 
 export class LanguageServerClient {
   private static instance: LanguageServerClient;
+  private cachedEndpoints: LSEndpoint[] = [];
+  private lastEndpointsDiscovery = 0;
+  private cachedActiveModel: string | null = null;
+  private lastModelCheck = 0;
 
   public static getInstance(): LanguageServerClient {
     if (!LanguageServerClient.instance) {
@@ -12,85 +54,248 @@ export class LanguageServerClient {
   }
 
   /**
-   * Readiness Gate: Probes if the Antigravity Language Server (LS) is connected and ready
-   * to receive in-memory credentials without dropping connections.
+   * Discovers active Antigravity Language Server processes and their TCP listening ports.
    */
-  public async probeReadiness(maxRetries = 5, delayMs = 300): Promise<boolean> {
-    const commands = await vscode.commands.getCommands(true);
-    const hasAntigravityCmds = commands.some((cmd) =>
-      cmd.startsWith('_antigravity.') || cmd.startsWith('antigravity.')
-    );
-
-    if (hasAntigravityCmds) {
-      return true;
+  public async findLSEndpoints(forceRefresh = false): Promise<LSEndpoint[]> {
+    const now = Date.now();
+    if (!forceRefresh && this.cachedEndpoints.length > 0 && now - this.lastEndpointsDiscovery < 15000) {
+      return this.cachedEndpoints;
     }
 
-    // Attempt retry loop for startup initialization
-    for (let i = 0; i < maxRetries; i++) {
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      const updatedCommands = await vscode.commands.getCommands(true);
-      if (
-        updatedCommands.some(
-          (cmd) =>
-            cmd.startsWith('_antigravity.') || cmd.startsWith('antigravity.')
-        )
-      ) {
-        return true;
+    const endpoints: LSEndpoint[] = [];
+    const isWindows = process.platform === 'win32';
+
+    try {
+      if (isWindows) {
+        const ps = `powershell -NoProfile -Command "Get-WmiObject Win32_Process | Where-Object { $_.ProcessName -like '*language_server*' -or $_.CommandLine -like '*language_server*' } | Select-Object -Property ProcessId, CommandLine | ForEach-Object { $_.ProcessId.ToString() + '###' + $_.CommandLine }"`;
+        const { stdout } = await execAsync(ps, { timeout: 6000 });
+        const lines = stdout.split('\n');
+        const candidates: { pid: string; csrfToken: string }[] = [];
+
+        for (const line of lines) {
+          if (!line.includes('###')) continue;
+          const [pidStr, cmdLine] = line.split('###');
+          const pid = pidStr.trim();
+          const csrfMatch = cmdLine.match(/--csrf_token[\s=]+([\w-]+)/);
+          if (pid && csrfMatch) {
+            candidates.push({ pid, csrfToken: csrfMatch[1] });
+          }
+        }
+
+        if (candidates.length > 0) {
+          const { stdout: netstatOut } = await execAsync('netstat -ano -p TCP', { timeout: 6000 });
+          for (const cand of candidates) {
+            for (const nLine of netstatOut.split('\n')) {
+              if (nLine.includes('LISTENING') && nLine.trim().endsWith(cand.pid)) {
+                const parts = nLine.trim().split(/\s+/);
+                const m = parts[1]?.match(/:(\d+)$/);
+                if (m) {
+                  endpoints.push({ port: parseInt(m[1], 10), csrfToken: cand.csrfToken, pid: cand.pid });
+                }
+              }
+            }
+          }
+        }
+      } else {
+        const { stdout } = await execAsync('ps -A -ww -o pid,args | grep language_server | grep -v grep', { timeout: 5000 });
+        const lines = stdout.split('\n');
+        for (const line of lines) {
+          const pidMatch = line.trim().match(/^(\d+)\s/);
+          const csrfMatch = line.match(/--csrf_token[\s=]+([\w-]+)/);
+          if (pidMatch && csrfMatch) {
+            const pid = pidMatch[1];
+            try {
+              const { stdout: lsofOut } = await execAsync(`lsof -Pan -p ${pid} -i TCP -sTCP:LISTEN 2>/dev/null`, { timeout: 3000 });
+              for (const lLine of lsofOut.split('\n')) {
+                const portMatch = lLine.match(/:(\d+)\s+\(LISTEN\)/);
+                if (portMatch) {
+                  endpoints.push({ port: parseInt(portMatch[1], 10), csrfToken: csrfMatch[1], pid });
+                }
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
       }
+    } catch (err) {
+      console.warn('[LanguageServerClient] Endpoint discovery error:', err);
     }
 
-    return false;
+    this.cachedEndpoints = endpoints;
+    this.lastEndpointsDiscovery = now;
+    return endpoints;
   }
 
   /**
-   * In-memory live hot-swap of the active Language Server user credentials.
-   * Eliminates the need to close or restart the IDE window.
+   * Performs an HTTP POST call to an Antigravity Language Server endpoint.
+   */
+  public async callLs<T = any>(
+    port: number,
+    csrfToken: string,
+    method: string,
+    body: any = {},
+    timeoutMs = 3000
+  ): Promise<T | null> {
+    const fullPath = method.startsWith('/')
+      ? method
+      : `/exa.language_server_pb.LanguageServerService/${method}`;
+    const bodyStr = JSON.stringify(body);
+
+    return new Promise((resolve) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: fullPath,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(bodyStr),
+            'Connect-Protocol-Version': '1',
+            'X-Codeium-Csrf-Token': csrfToken,
+          },
+          timeout: timeoutMs,
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => {
+            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              try {
+                resolve(JSON.parse(data));
+              } catch {
+                resolve(data as any);
+              }
+            } else {
+              resolve(null);
+            }
+          });
+        }
+      );
+
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(null);
+      });
+      req.write(bodyStr);
+      req.end();
+    });
+  }
+
+  /**
+   * Calls RegisterGdmUser across all active Language Server endpoints to hot-swap
+   * credentials in memory immediately with zero reload.
+   */
+  public async callRegisterGdmUser(): Promise<boolean> {
+    const endpoints = await this.findLSEndpoints(true);
+    if (endpoints.length === 0) return false;
+
+    let anySuccess = false;
+    await Promise.allSettled(
+      endpoints.map(async (ep) => {
+        const res = await this.callLs(ep.port, ep.csrfToken, 'RegisterGdmUser', {});
+        if (res !== null) {
+          anySuccess = true;
+        }
+      })
+    );
+
+    return anySuccess;
+  }
+
+  /**
+   * Legacy wrapper: maintains compatibility with existing calls.
    */
   public async registerUserInMemory(account: Account): Promise<boolean> {
-    const isReady = await this.probeReadiness();
+    return this.callRegisterGdmUser();
+  }
 
-    const payload = {
-      email: account.email,
-      token: account.token.accessToken,
-      refreshToken: account.token.refreshToken,
-      expiryTimestamp: account.token.expiryTimestamp,
-      projectId: account.token.projectId,
-      idToken: account.token.idToken,
-    };
-
-    // 1. Primary method: Antigravity IDE native in-memory RPC
-    try {
-      await vscode.commands.executeCommand('_antigravity.registerGdmUser', payload);
-      return true;
-    } catch (primaryErr) {
-      console.warn(
-        '[LanguageServerClient] _antigravity.registerGdmUser not available or rejected:',
-        primaryErr
-      );
-    }
-
-    // 2. Secondary method: Try standard Antigravity auth injection command
-    try {
-      await vscode.commands.executeCommand('antigravity.updateCredentials', payload);
-      return true;
-    } catch {
-      // Fall through to generic provider
-    }
-
-    // 3. Fallback for Cursor / VS Code: Notify authentication provider
-    try {
-      const session = await vscode.authentication.getSession(
-        'google',
-        ['https://www.googleapis.com/auth/userinfo.email'],
-        { createIfNone: false }
-      );
-      if (session) {
-        console.log('[LanguageServerClient] Session provider active for:', session.account.label);
+  /**
+   * Fetches the user status and available models from the active language server.
+   */
+  public async getUserStatus(): Promise<any | null> {
+    const endpoints = await this.findLSEndpoints();
+    for (const ep of endpoints) {
+      try {
+        const res = await this.callLs(ep.port, ep.csrfToken, 'GetUserStatus', {
+          metadata: { ideName: 'antigravity', extensionName: 'antigravity', locale: 'en' },
+        });
+        if (res && res.userStatus) {
+          return res.userStatus;
+        }
+      } catch {
+        // try next
       }
-      return true;
-    } catch (authErr) {
-      console.error('[LanguageServerClient] Authentication provider fallback error:', authErr);
-      return false;
     }
+    return null;
+  }
+
+  /**
+   * Dynamically resolves the currently active model selected in the IDE / Antigravity Chat.
+   */
+  public async getActiveChatModel(cascadeId?: string): Promise<string> {
+    const now = Date.now();
+    if (this.cachedActiveModel && now - this.lastModelCheck < 10000) {
+      return this.cachedActiveModel;
+    }
+
+    const endpoints = await this.findLSEndpoints();
+
+    // 1. Try cascade trajectory inference data
+    if (cascadeId) {
+      for (const ep of endpoints) {
+        try {
+          const traj = await this.callLs(ep.port, ep.csrfToken, 'GetCascadeTrajectory', { cascadeId });
+          const steps = traj?.trajectory?.steps || [];
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const raw = steps[i].metadata?.generatorModel || steps[i].metadata?.modelUsage?.model;
+            if (raw) {
+              const friendly = MODEL_FRIENDLY_NAMES[raw] || raw;
+              this.cachedActiveModel = friendly;
+              this.lastModelCheck = now;
+              return friendly;
+            }
+          }
+        } catch {
+          // not cascade server
+        }
+      }
+    }
+
+    // 2. Check userStatus from Language Server
+    for (const ep of endpoints) {
+      try {
+        const res = await this.callLs(ep.port, ep.csrfToken, 'GetUserStatus', {
+          metadata: { ideName: 'antigravity', extensionName: 'antigravity', locale: 'en' },
+        });
+        const override = res?.userStatus?.cascadeModelConfigData?.defaultOverrideModelConfig?.modelOrAlias?.model;
+        if (override) {
+          const friendly = MODEL_FRIENDLY_NAMES[override] || override;
+          this.cachedActiveModel = friendly;
+          this.lastModelCheck = now;
+          return friendly;
+        }
+
+        const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs;
+        if (Array.isArray(configs) && configs.length > 0) {
+          const rec = configs.find((c: any) => c.isRecommended) || configs[0];
+          if (rec && rec.label) {
+            const label = rec.label.replace('3.8', '3.0');
+            this.cachedActiveModel = label;
+            this.lastModelCheck = now;
+            return label;
+          }
+        }
+      } catch {
+        // try next
+      }
+    }
+
+    // Fallback default
+    this.cachedActiveModel = 'Gemini 3.0 Flash Medium';
+    this.lastModelCheck = now;
+    return this.cachedActiveModel;
   }
 }

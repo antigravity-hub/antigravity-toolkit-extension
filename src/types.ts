@@ -92,6 +92,7 @@ export interface TokenUsageStats {
   totalRequests: number;
   uniqueAccounts: number;
   todayTokens?: number;
+  weekTokens?: number;
   byAccount: AccountTokenUsage[];
   byModel: ModelTokenUsage[];
 }

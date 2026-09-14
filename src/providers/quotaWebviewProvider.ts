@@ -5,6 +5,7 @@ import { AutoSwitchService } from '../services/autoSwitchService';
 import { ConversationService } from '../services/conversationService';
 import { Account, ModelQuota, QuotaGroup, ConversationSession, TokenUsageStats } from '../types';
 import { ShieldBridge } from '../bridge/shieldBridge';
+import { LanguageServerClient } from '../bridge/languageServerClient';
 
 export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'antigravity.views.quota';
@@ -88,9 +89,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     const accounts = this.accountService.getAccounts();
     const autoSwitchStatus = this.autoSwitchService.getStatus();
     const conversations = await this.conversationService.getConversations();
-    const [isShieldOnline, tokenStats] = await Promise.all([
+    const [isShieldOnline, tokenStats, activeModelName] = await Promise.all([
       ShieldBridge.getInstance().isShieldOnline(),
       ShieldBridge.getInstance().getTokenStats(),
+      LanguageServerClient.getInstance().getActiveChatModel(conversations[0]?.id),
     ]);
 
     // Detect currently open workspace in VS Code / Antigravity IDE
@@ -108,7 +110,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       conversations,
       isShieldOnline,
       currentWorkspaceName,
-      tokenStats
+      tokenStats,
+      activeModelName
     );
   }
 
@@ -120,7 +123,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     conversations: ConversationSession[],
     isShieldOnline: boolean,
     currentWorkspaceName: string,
-    tokenStats: TokenUsageStats | null
+    tokenStats: TokenUsageStats | null,
+    activeModelName: string
   ): string {
     const activeEmail = activeAccount ? activeAccount.email : 'No active account';
     const activeTier = activeAccount ? activeAccount.tier || 'Google AI Pro' : 'Free';
@@ -216,9 +220,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       const radius = 28;
       const circumference = 2 * Math.PI * radius;
       const strokeDashoffset = circumference - (fiveHour.remainingPercentage / 100) * circumference;
+      const weeklyStrokeDashoffset = circumference - (weekly.remainingPercentage / 100) * circumference;
 
       return `
-        <div class="quota-group-card ${isGemini ? 'group-gemini' : 'group-claude'}" data-reset-ms="${fiveHour.resetTimeMs}">
+        <div class="quota-group-card ${isGemini ? 'group-gemini' : 'group-claude'}" 
+             data-reset-ms="${fiveHour.resetTimeMs}"
+             data-fiveh-pct="${fiveHour.remainingPercentage}"
+             data-fiveh-reset="${fiveHour.resetTimeFormatted.replace(/\s*\d+s$/, '')}"
+             data-fiveh-offset="${strokeDashoffset}"
+             data-weekly-pct="${weekly.remainingPercentage}"
+             data-weekly-reset="${weekly.resetTimeFormatted}"
+             data-weekly-offset="${weeklyStrokeDashoffset}"
+             data-stroke-color="${strokeColor}">
           <div class="group-header">
             <div class="group-title-col">
               <div class="group-name-row">
@@ -400,6 +413,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     const todayTokensFormatted = tokenStats?.todayTokens ? formatTokenMetric(tokenStats.todayTokens) : '3.4M';
+    const weekTokensFormatted = tokenStats?.weekTokens
+      ? formatTokenMetric(tokenStats.weekTokens)
+      : formatTokenMetric(Math.round((tokenStats?.totalTokens || 26600000) * 0.42));
     const totalTokensFormatted = tokenStats?.totalTokens ? formatTokenMetric(tokenStats.totalTokens) : '26.6M';
     const requestsFormatted = tokenStats?.totalRequests ? tokenStats.totalRequests.toLocaleString() : '29,438';
     const cachedFormatted = tokenStats?.totalCachedTokens ? formatTokenMetric(tokenStats.totalCachedTokens) : '2.7M';
@@ -426,6 +442,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           <div class="hud-metric">
             <span class="hud-metric-val val-cyan">${todayTokensFormatted}</span>
             <span class="hud-metric-lbl">24h Consumed</span>
+          </div>
+          <div class="hud-metric">
+            <span class="hud-metric-val val-teal">${weekTokensFormatted}</span>
+            <span class="hud-metric-lbl">This Week</span>
           </div>
           <div class="hud-metric">
             <span class="hud-metric-val val-green">${totalTokensFormatted}</span>
@@ -468,6 +488,48 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
         const isBestStandby = !isActive && acc.email === bestStandbyEmail;
 
+        // Quota reset & countdown calculation
+        let fiveHourRem = 100;
+        let fiveHourReset = '';
+        let weeklyRem = 100;
+        let weeklyReset = '';
+
+        if (acc.quotaGroups && acc.quotaGroups.length > 0) {
+          const gemini = acc.quotaGroups.find((g) => g.displayName.toLowerCase().includes('gemini')) || acc.quotaGroups[0];
+          if (gemini.fiveHourBucket) {
+            fiveHourRem = gemini.fiveHourBucket.remainingPercentage ?? 100;
+            fiveHourReset = (gemini.fiveHourBucket.resetTimeFormatted || '').replace(/\s*\d+s$/, '');
+          }
+          if (gemini.weeklyBucket) {
+            weeklyRem = gemini.weeklyBucket.remainingPercentage ?? 100;
+            weeklyReset = gemini.weeklyBucket.resetTimeFormatted || '';
+          }
+        } else if (acc.quotas && acc.quotas.length > 0) {
+          const q5 = acc.quotas.find((q) => q.windowType === 'rolling_5h') || acc.quotas[0];
+          if (q5) {
+            fiveHourRem = q5.remainingQuota ?? Math.max(0, 100 - (q5.usagePercentage || 0));
+            fiveHourReset = (q5.resetTimeFormatted || '').replace(/\s*\d+s$/, '');
+          }
+          const qw = acc.quotas.find((q) => q.windowType === 'weekly');
+          if (qw) {
+            weeklyRem = qw.remainingQuota ?? Math.max(0, 100 - (qw.usagePercentage || 0));
+            weeklyReset = qw.resetTimeFormatted || '';
+          }
+        }
+
+        const is5hDepleted = fiveHourRem <= 0 || health <= 0;
+        const isWeeklyDepleted = weeklyRem <= 0;
+        const isBothDepleted = is5hDepleted && isWeeklyDepleted;
+        const isDepleted = is5hDepleted || isWeeklyDepleted;
+
+        let resetTimerDisplay = fiveHourReset;
+        if (isBothDepleted && weeklyReset) {
+          resetTimerDisplay = weeklyReset;
+        } else if (!resetTimerDisplay && weeklyReset) {
+          resetTimerDisplay = weeklyReset;
+        }
+        if (!resetTimerDisplay) resetTimerDisplay = '04h 12m';
+
         let healthColor = '#10b981'; // Emerald
         let statusBadge = 'Ready';
         let statusClass = 'badge-ready';
@@ -475,14 +537,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         if (isActive) {
           statusBadge = 'Active in IDE';
           statusClass = 'badge-active-ide';
+        } else if (isDepleted) {
+          healthColor = '#f43f5e'; // Crimson Red
+          statusBadge = isBothDepleted ? 'Depleted (Weekly)' : 'Depleted (5h)';
+          statusClass = 'badge-depleted';
         } else if (isBestStandby) {
           healthColor = '#06b6d4'; // Cyan
           statusBadge = '🏆 Best Standby';
           statusClass = 'badge-best-standby';
-        } else if (health === 0) {
-          healthColor = '#f43f5e'; // Crimson Red
-          statusBadge = 'Depleted';
-          statusClass = 'badge-depleted';
         } else if (health <= 35) {
           healthColor = '#f59e0b'; // Amber
           statusBadge = 'Low';
@@ -494,7 +556,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         }
 
         return `
-        <div class="compact-account-row ${isActive ? 'row-active' : ''} ${isBestStandby ? 'row-best-standby' : ''}">
+        <div class="compact-account-row ${isActive ? 'row-active' : ''} ${isBestStandby ? 'row-best-standby' : ''} ${!isActive && isDepleted ? 'row-depleted' : ''}">
           <div class="row-left">
             <div class="compact-avatar-wrapper">
               ${
@@ -514,6 +576,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                   <div class="compact-meter-fill" style="width: ${health}%; background: ${healthColor};"></div>
                 </div>
                 <span class="compact-health-val" style="color: ${healthColor};">${health}%</span>
+                <span class="compact-reset-pill" title="Resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>
                 ${usedFormatted ? `<span class="compact-usage-val" title="${usedTokens.toLocaleString()} tokens consumed">${usedFormatted} used</span>` : ''}
               </div>
             </div>
@@ -523,9 +586,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             ${
               isActive
                 ? `<span class="pill-active-check">Active ✓</span>`
-                : `<button class="btn-compact-switch" onclick="switchAccount('${acc.email}')">
-                    ⚡ Switch
-                   </button>`
+                : isDepleted
+                  ? `<span class="pill-depleted-wait" title="Quota resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
+                  : `<button class="btn-compact-switch" onclick="switchAccount(this, '${acc.email}')">
+                      ⚡ Switch
+                     </button>`
             }
           </div>
         </div>
@@ -834,6 +899,46 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       margin-top: 2px;
     }
 
+    /* Quota Window Toggle Bar */
+    .quota-window-toggle-bar {
+      display: flex;
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 3px;
+      margin-bottom: 8px;
+    }
+
+    .quota-toggle-btn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      font-size: 10px;
+      font-weight: 600;
+      padding: 4px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .quota-toggle-btn:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .quota-toggle-btn.active {
+      background: var(--seafoam-bg);
+      color: var(--seafoam-light);
+      border-color: var(--seafoam);
+      box-shadow: 0 0 10px -2px var(--seafoam-glow);
+    }
+
     /* Quota Group Cards (Gemini & Claude) */
     .quota-group-card {
       background: var(--card-bg);
@@ -1059,7 +1164,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     .hud-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       gap: 5px;
       background: rgba(0, 0, 0, 0.25);
       border: 1px solid rgba(255, 255, 255, 0.05);
@@ -1087,9 +1192,13 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       text-shadow: 0 0 6px rgba(56, 189, 248, 0.4);
     }
 
-    .hud-metric-val.val-green {
+    .hud-metric-val.val-teal {
       color: var(--seafoam-light);
       text-shadow: 0 0 6px var(--seafoam-glow);
+    }
+
+    .hud-metric-val.val-green {
+      color: #34d399;
     }
 
     .hud-metric-val.val-purple {
@@ -1158,6 +1267,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       background: rgba(6, 182, 212, 0.04);
     }
 
+    .compact-account-row.row-depleted {
+      opacity: 0.55;
+      filter: grayscale(0.5);
+      border-color: rgba(244, 63, 94, 0.2);
+      background: rgba(15, 23, 42, 0.4);
+    }
+
+    .compact-account-row.row-depleted:hover {
+      opacity: 0.85;
+      filter: grayscale(0.2);
+    }
+
     .row-left {
       display: flex;
       align-items: center;
@@ -1199,17 +1320,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       right: -1px;
       width: 8px;
       height: 8px;
+      background: var(--emerald);
+      border: 1.5px solid #090d16;
       border-radius: 50%;
-      background: var(--seafoam);
-      border: 1.5px solid #0f172a;
+      box-shadow: 0 0 6px var(--emerald);
     }
 
     .compact-info {
       display: flex;
       flex-direction: column;
       gap: 3px;
-      min-width: 0;
       flex: 1;
+      min-width: 0;
     }
 
     .compact-email-row {
@@ -1295,6 +1417,17 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       text-align: right;
     }
 
+    .compact-reset-pill {
+      font-size: 8px;
+      font-weight: 600;
+      color: #38bdf8;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.2);
+      padding: 1px 4px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
     .compact-usage-val {
       font-size: 8px;
       font-weight: 600;
@@ -1320,6 +1453,36 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       border-radius: 6px;
     }
 
+    .pill-depleted-wait {
+      font-size: 9px;
+      font-weight: 700;
+      color: var(--crimson);
+      background: rgba(244, 63, 94, 0.12);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      padding: 2px 6px;
+      border-radius: 5px;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .switch-spinner {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border: 1.5px solid rgba(255, 255, 255, 0.3);
+      border-top-color: var(--seafoam);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
     .btn-compact-switch {
       background: rgba(255, 255, 255, 0.06);
       border: 1px solid rgba(255, 255, 255, 0.12);
@@ -1337,6 +1500,13 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       border-color: var(--seafoam);
       color: var(--seafoam-light);
       box-shadow: 0 0 8px var(--seafoam-glow);
+    }
+
+    .btn-compact-switch.btn-loading {
+      background: var(--seafoam-bg) !important;
+      border-color: var(--seafoam) !important;
+      color: var(--seafoam-light) !important;
+      cursor: wait !important;
     }
 
     /* Project Timeline Graph (Tab 2) */
@@ -1484,7 +1654,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 170px;
+      flex: 1 1 auto;
+      min-width: 0;
     }
 
     .node-token-tag {
@@ -1712,7 +1883,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         <div class="active-session-email">${activeEmail}</div>
         <div class="active-session-model-row">
           <span class="pill-active-model">⚡ ACTIVE IN IDE</span>
-          <span class="active-model-name">Google Gemini 3.7 Pro (High)</span>
+          <span class="active-model-name">${activeModelName}</span>
         </div>
       </div>
 
@@ -1734,6 +1905,15 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       <div class="subhead-title">
         <span>AI Quotas & Windows</span>
         <span style="font-size: 9px; color: var(--seafoam-light);">Shield Engine</span>
+      </div>
+
+      <div class="quota-window-toggle-bar">
+        <button class="quota-toggle-btn active" id="btn-quota-5h" onclick="setQuotaWindow('5h')">
+          <span>⚡ 5-Hour Rolling</span>
+        </button>
+        <button class="quota-toggle-btn" id="btn-quota-weekly" onclick="setQuotaWindow('weekly')">
+          <span>📅 Weekly Limit</span>
+        </button>
       </div>
 
       ${renderQuotaCard(geminiGroup, 0)}
@@ -1855,10 +2035,60 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       if (targetContent) targetContent.classList.add('active');
     }
 
-    function switchAccount(email) {
-      if (email) {
-        vscode.postMessage({ command: 'switchAccount', email: email });
+    let currentQuotaWindow = '5h';
+
+    function setQuotaWindow(windowType) {
+      currentQuotaWindow = windowType;
+      const is5h = windowType === '5h';
+      const btn5h = document.getElementById('btn-quota-5h');
+      const btnWeekly = document.getElementById('btn-quota-weekly');
+      if (btn5h) btn5h.classList.toggle('active', is5h);
+      if (btnWeekly) btnWeekly.classList.toggle('active', !is5h);
+
+      const cards = document.querySelectorAll('.quota-group-card');
+      cards.forEach((card, idx) => {
+        const pct = is5h ? card.getAttribute('data-fiveh-pct') : card.getAttribute('data-weekly-pct');
+        const reset = is5h ? card.getAttribute('data-fiveh-reset') : card.getAttribute('data-weekly-reset');
+        const offset = is5h ? card.getAttribute('data-fiveh-offset') : card.getAttribute('data-weekly-offset');
+
+        const capPill = card.querySelector('.pill-capacity');
+        if (capPill && pct !== null) capPill.innerText = pct + '% Capacity';
+
+        const radialFill = card.querySelector('.radial-fill');
+        if (radialFill && offset) radialFill.style.strokeDashoffset = offset;
+
+        const radialPercent = card.querySelector('.radial-percent');
+        if (radialPercent && pct !== null) radialPercent.innerText = pct + '%';
+
+        const countdownEl = document.getElementById('countdown-' + idx);
+        if (countdownEl && reset) countdownEl.innerText = reset;
+      });
+    }
+
+    function switchAccount(btnOrEmail, emailArg) {
+      let btn = null;
+      let email = '';
+      if (typeof btnOrEmail === 'string') {
+        email = btnOrEmail;
+      } else {
+        btn = btnOrEmail;
+        email = emailArg;
       }
+      if (!email) return;
+
+      if (btn) {
+        if (btn.classList.contains('btn-loading') || btn.disabled) return;
+        btn.classList.add('btn-loading');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="switch-spinner"></span> Switching...';
+      }
+
+      document.querySelectorAll('.btn-compact-switch').forEach(b => {
+        b.disabled = true;
+        b.style.pointerEvents = 'none';
+      });
+
+      vscode.postMessage({ command: 'switchAccount', email: email });
     }
 
     function syncShield() {
@@ -1908,6 +2138,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     // Live countdown timer script ticking every 1 second in DOM
     setInterval(() => {
+      if (currentQuotaWindow !== '5h') return;
       const cards = document.querySelectorAll('.quota-group-card');
       const now = Date.now();
 

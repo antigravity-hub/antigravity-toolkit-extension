@@ -2,12 +2,16 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as child_process from 'child_process';
 import { ConversationSession, ConversationStep } from '../types';
 
 export class ConversationService {
   private static instance: ConversationService;
   private onDidChangeConversationsEmitter = new vscode.EventEmitter<void>();
   public readonly onDidChangeConversations = this.onDidChangeConversationsEmitter.event;
+
+  private trajectoryMap: Map<string, { title: string; workspace?: string }> = new Map();
+  private lastTrajectoryLoad = 0;
 
   private constructor() {}
 
@@ -134,9 +138,83 @@ export class ConversationService {
   }
 
   /**
+   * Loads official conversation titles and workspaces from state.vscdb
+   * (antigravityUnifiedStateSync.trajectorySummaries) with zero lag.
+   */
+  private loadTrajectorySummaries(): void {
+    const now = Date.now();
+    if (this.trajectoryMap.size > 0 && now - this.lastTrajectoryLoad < 30000) {
+      return;
+    }
+
+    try {
+      const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
+      const dbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+      if (!fs.existsSync(dbPath)) return;
+
+      const val = child_process
+        .execSync(
+          `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';"`,
+          { maxBuffer: 25 * 1024 * 1024, timeout: 5000 }
+        )
+        .toString()
+        .trim();
+
+      if (!val) return;
+
+      const buf = Buffer.from(val, 'base64');
+      const text = buf.toString('latin1');
+      const regex = /\$([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g;
+      let match: RegExpExecArray | null;
+
+      while ((match = regex.exec(text)) !== null) {
+        const uuid = match[1];
+        const offset = match.index;
+        const windowStart = Math.max(0, offset - 500);
+        const windowEnd = Math.min(text.length, offset + 1500);
+        const chunk = text.slice(windowStart, windowEnd);
+
+        const b64Regex = /([A-Za-z0-9+/=]{40,})/g;
+        let b64Match: RegExpExecArray | null;
+        while ((b64Match = b64Regex.exec(chunk)) !== null) {
+          try {
+            const decoded = Buffer.from(b64Match[1], 'base64');
+            if (decoded[0] === 0x0a) {
+              let len = decoded[1];
+              let titleStart = 2;
+              if (len & 0x80) {
+                len = (len & 0x7f) | (decoded[2] << 7);
+                titleStart = 3;
+              }
+              const title = decoded.slice(titleStart, titleStart + len).toString('utf8');
+              if (title.length > 2 && !this.trajectoryMap.has(uuid)) {
+                const decodedStr = decoded.toString('utf8');
+                const fileMatch = decodedStr.match(/file:\/\/\/([^\s\x00-\x1f"']+)/);
+                let workspace: string | undefined;
+                if (fileMatch) {
+                  const rawPath = decodeURIComponent(fileMatch[0]);
+                  const clean = rawPath.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
+                  workspace = path.basename(path.normalize(clean));
+                }
+                this.trajectoryMap.set(uuid, { title, workspace });
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+      this.lastTrajectoryLoad = now;
+    } catch (e) {
+      console.warn('[ConversationService] Failed to load trajectory summaries:', e);
+    }
+  }
+
+  /**
    * Scans and returns all discovered conversations sorted by latest activity.
    */
   public async getConversations(): Promise<ConversationSession[]> {
+    this.loadTrajectorySummaries();
     const brainDirs = this.getBrainDirectories();
     const knownWorkspaces = this.getKnownWorkspaceNames();
     const sessions: ConversationSession[] = [];
@@ -221,7 +299,16 @@ export class ConversationService {
             // ignore file read error
           }
 
-          if (stepCount === 0 && !previewText) {
+          let finalTitle = previewText;
+          const traj = this.trajectoryMap.get(convId);
+          if (traj?.title) {
+            finalTitle = traj.title;
+          }
+          if (traj?.workspace) {
+            projectName = traj.workspace;
+          }
+
+          if (stepCount === 0 && !finalTitle) {
             continue;
           }
 
@@ -237,7 +324,7 @@ export class ConversationService {
 
           sessions.push({
             id: convId,
-            title: previewText || `Session ${convId.slice(0, 8)}`,
+            title: finalTitle || `Session ${convId.slice(0, 8)}`,
             createdAt: mtime,
             updatedAt: mtime,
             dateFormatted,

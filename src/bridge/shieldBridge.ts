@@ -579,13 +579,33 @@ export class ShieldBridge {
       ]);
 
       let todayTokens = 0;
+      let weekTokens = 0;
       if (Array.isArray(daily) && daily.length > 0) {
-        const todayStr = new Date().toISOString().slice(0, 10);
+        const now = new Date();
+        const todayStr = now.toISOString().slice(0, 10);
         const todayEntry = daily.find((d: any) => d.period === todayStr);
         if (todayEntry && typeof todayEntry.total_tokens === 'number') {
           todayTokens = todayEntry.total_tokens;
         } else {
           todayTokens = daily[daily.length - 1]?.total_tokens || 0;
+        }
+
+        // Calculate tokens for the current week (from Monday to today, or last 7 days)
+        const dayOfWeek = now.getDay();
+        const diffToMonday = (dayOfWeek + 6) % 7;
+        const monday = new Date(now);
+        monday.setDate(now.getDate() - diffToMonday);
+        monday.setHours(0, 0, 0, 0);
+
+        for (const d of daily) {
+          const dDate = new Date(d.period);
+          if (dDate >= monday && typeof d.total_tokens === 'number') {
+            weekTokens += d.total_tokens;
+          }
+        }
+        if (weekTokens === 0) {
+          const last7 = daily.slice(-7);
+          weekTokens = last7.reduce((acc, curr) => acc + (curr.total_tokens || 0), 0);
         }
       }
 
@@ -597,6 +617,7 @@ export class ShieldBridge {
         totalRequests: summary.total_requests || 0,
         uniqueAccounts: summary.unique_accounts || 0,
         todayTokens,
+        weekTokens,
         byAccount: Array.isArray(byAccount)
           ? byAccount.map((a: any) => ({
               accountEmail: a.account_email || '',
