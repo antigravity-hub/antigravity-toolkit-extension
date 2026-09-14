@@ -17,6 +17,22 @@ export interface ModelQuota {
   windowType: 'rolling_5h' | 'weekly';
 }
 
+export interface QuotaBucket {
+  bucketId: string;
+  window: '5h' | 'weekly';
+  remainingPercentage: number;
+  resetTimeMs: number;
+  resetTimeFormatted: string;
+  displayName: string;
+}
+
+export interface QuotaGroup {
+  displayName: string;
+  description?: string;
+  fiveHourBucket?: QuotaBucket;
+  weeklyBucket?: QuotaBucket;
+}
+
 export interface Account {
   id: string;
   email: string;
@@ -26,6 +42,7 @@ export interface Account {
   tier?: string; // 'Free' | 'Pro' | 'Ultra'
   token: AccountToken;
   quotas?: ModelQuota[];
+  quotaGroups?: QuotaGroup[];
   lastSyncedAt?: number;
 }
 
@@ -48,4 +65,6 @@ export interface ConversationSession {
   stepCount: number;
   model?: string;
   previewText?: string;
+  projectName?: string;
+  tokenEstimate?: number;
 }

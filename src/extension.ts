@@ -40,7 +40,8 @@ export function activate(context: vscode.ExtensionContext) {
     context.extensionUri,
     quotaService,
     accountService,
-    autoSwitchService
+    autoSwitchService,
+    conversationService
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(

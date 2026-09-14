@@ -76,19 +76,44 @@ export class ConversationService {
             mtime = Date.now();
           }
 
+          let projectName = 'Main Project';
+          let tokenEstimate = 0;
+
           if (transcriptPath && fs.existsSync(transcriptPath)) {
             try {
               const content = fs.readFileSync(transcriptPath, 'utf8');
               const lines = content.split('\n').filter((l) => l.trim().length > 0);
               stepCount = lines.length;
+              tokenEstimate = Math.round(content.length / 3.8);
 
-              // Extract first user input as title / preview
-              for (const line of lines.slice(0, 10)) {
+              // Extract project name & first clean user input as title / preview
+              for (const line of lines.slice(0, 15)) {
                 try {
                   const obj = JSON.parse(line);
-                  if (obj.type === 'USER_INPUT' && obj.content) {
-                    previewText = String(obj.content).slice(0, 120);
-                    break;
+                  const str = JSON.stringify(obj);
+
+                  // Extract project name from workspace paths
+                  if (!projectName || projectName === 'Main Project') {
+                    const match = str.match(/([a-zA-Z0-9_\-\.\+]+) -> [a-zA-Z0-9_\-\.\+\/]+/);
+                    if (match && match[1]) {
+                      projectName = path.basename(match[1]);
+                    } else {
+                      const pathMatch = str.match(/[A-Za-z]:\\[^"'\n\r]+\\([a-zA-Z0-9_\-]+)/);
+                      if (pathMatch && pathMatch[1] && !['brain', 'logs', 'tasks', 'AppData', 'Users', 'Programs'].includes(pathMatch[1])) {
+                        projectName = pathMatch[1];
+                      }
+                    }
+                  }
+
+                  if (obj.type === 'USER_INPUT' && obj.content && !previewText) {
+                    let cleaned = String(obj.content)
+                      .replace(/<USER_REQUEST>[\s\S]*?<\/USER_REQUEST>/g, (m) => m.replace(/<\/?USER_REQUEST>/g, ''))
+                      .replace(/<[^>]+>/g, '')
+                      .replace(/\s+/g, ' ')
+                      .trim();
+                    if (cleaned.length > 0) {
+                      previewText = cleaned.slice(0, 90);
+                    }
                   }
                 } catch {
                   // ignore JSON parse errors on malformed lines
@@ -116,6 +141,8 @@ export class ConversationService {
             transcriptPath,
             stepCount,
             previewText,
+            projectName: projectName || 'Default Workspace',
+            tokenEstimate: tokenEstimate || stepCount * 1200,
           });
         }
       } catch (err) {

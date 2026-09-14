@@ -34,7 +34,7 @@
         {
           "id": "antigravity-toolkit-sidebar",
           "title": "Antigravity Toolkit",
-          "icon": "$(rocket)"
+          "icon": "$(shield)"
         }
       ]
     },

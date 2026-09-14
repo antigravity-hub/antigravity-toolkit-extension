@@ -77,7 +77,11 @@ export class ShieldBridge {
   private fetchFromUrl(url: URL): Promise<Account[]> {
     return new Promise((resolve) => {
       try {
-        const req = http.get(url, { timeout: 3000 }, (res) => {
+        const apiKey = this.getShieldApiKey();
+        const headers: Record<string, string> = {};
+        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+        const req = http.get(url, { headers, timeout: 3000 }, (res) => {
           if (res.statusCode !== 200) {
             resolve([]);
             return;
@@ -165,6 +169,7 @@ export class ShieldBridge {
         let tier = 'Google AI Pro';
         let avatarUrl: string | undefined = undefined;
         let quotas: ModelQuota[] = [];
+        let quotaGroups: import('../types').QuotaGroup[] = [];
 
         const detailPath = path.join(shieldDir, 'accounts', `${acc.id}.json`);
         if (fs.existsSync(detailPath)) {
@@ -182,6 +187,50 @@ export class ShieldBridge {
             }
             if (detail.quota) {
               tier = detail.quota.subscription_tier || tier;
+              if (Array.isArray(detail.quota.quota_groups)) {
+                quotaGroups = detail.quota.quota_groups.map((g: any) => {
+                  let fiveHourBucket: import('../types').QuotaBucket | undefined;
+                  let weeklyBucket: import('../types').QuotaBucket | undefined;
+
+                  if (Array.isArray(g.buckets)) {
+                    for (const b of g.buckets) {
+                      const remaining = typeof b.remaining_fraction === 'number'
+                        ? Math.round(b.remaining_fraction * 100)
+                        : typeof b.percentage === 'number'
+                        ? b.percentage
+                        : 100;
+                      const resetMs = b.reset_time ? new Date(b.reset_time).getTime() : Date.now() + 5 * 3600 * 1000;
+                      const durationMs = Math.max(0, resetMs - Date.now());
+                      const hours = Math.floor(durationMs / (1000 * 60 * 60));
+                      const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+                      const resetFormatted = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+
+                      const bucket: import('../types').QuotaBucket = {
+                        bucketId: b.bucket_id || b.window,
+                        window: b.window === 'weekly' ? 'weekly' : '5h',
+                        remainingPercentage: remaining,
+                        resetTimeMs: resetMs,
+                        resetTimeFormatted: resetFormatted,
+                        displayName: b.display_name || (b.window === 'weekly' ? 'Weekly Limit' : '5-Hour Limit'),
+                      };
+
+                      if (b.window === 'weekly') {
+                        weeklyBucket = bucket;
+                      } else {
+                        fiveHourBucket = bucket;
+                      }
+                    }
+                  }
+
+                  return {
+                    displayName: g.display_name,
+                    description: g.description,
+                    fiveHourBucket,
+                    weeklyBucket,
+                  };
+                });
+              }
+
               if (Array.isArray(detail.quota.models)) {
                 quotas = detail.quota.models.map((m: any) => {
                   const remaining = typeof m.percentage === 'number' ? m.percentage : 100;
@@ -224,6 +273,7 @@ export class ShieldBridge {
           tier,
           token,
           quotas,
+          quotaGroups: quotaGroups.length > 0 ? quotaGroups : undefined,
           lastSyncedAt: Date.now(),
         });
       }
@@ -346,28 +396,59 @@ export class ShieldBridge {
   }
 
   /**
-   * Proactively announces Toolkit availability to Shield via heartbeat.
+   * Reads API key from local Shield config (~/.antigravity_shield/gui_config.json)
+   */
+  public getShieldApiKey(): string | null {
+    try {
+      const home = os.homedir();
+      const configPath = path.join(home, '.antigravity_shield', 'gui_config.json');
+      if (fs.existsSync(configPath)) {
+        const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (data && data.proxy && data.proxy.api_key) {
+          return data.proxy.api_key;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  /**
+   * Proactively announces Toolkit availability to Shield via authenticated heartbeat.
    */
   public async sendHeartbeat(activeEmail?: string): Promise<boolean> {
     const payload = JSON.stringify({
-      ide: vscode.env.appName || 'Antigravity IDE',
-      version: '1.0.0',
+      ide: 'Antigravity IDE',
+      version: '2.0.0',
       active_email: activeEmail || null,
     });
 
-    const ports = [8045, 8765, 19527];
-    for (const port of ports) {
+    const apiKey = this.getShieldApiKey();
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Content-Length': String(Buffer.byteLength(payload)),
+    };
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    const targets = [
+      { port: 8045, path: '/api/toolkit/heartbeat' },
+      { port: 8045, path: '/toolkit/heartbeat' },
+      { port: 8765, path: '/toolkit/heartbeat' },
+      { port: 19527, path: '/api/toolkit/heartbeat' },
+    ];
+
+    for (const target of targets) {
       try {
-        const url = new URL(`http://127.0.0.1:${port}/api/toolkit/heartbeat`);
+        const url = new URL(`http://127.0.0.1:${target.port}${target.path}`);
         const ok = await new Promise<boolean>((resolve) => {
           const req = http.request(
             url,
             {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(payload),
-              },
+              headers,
               timeout: 1000,
             },
             (res) => resolve(res.statusCode === 200 || res.statusCode === 204)
@@ -382,7 +463,7 @@ export class ShieldBridge {
         });
         if (ok) return true;
       } catch {
-        // try next port
+        // try next target
       }
     }
     return false;
