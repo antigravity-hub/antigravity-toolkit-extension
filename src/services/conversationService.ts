@@ -457,12 +457,38 @@ export class ConversationService {
     }
 
     // 3. Copy clean search title to clipboard for quick paste in picker
-    const cleanTitle = session.title.trim();
+    const cleanTitle = session.title
+      .replace(/[\r\n\t]/g, ' ')
+      .replace(/[^\w\s\u0600-\u06FF]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 35);
+
     if (cleanTitle) {
       await vscode.env.clipboard.writeText(cleanTitle);
     }
 
-    // 4. Open native Antigravity Conversation Picker (Ctrl+Shift+A)
+    // 4. On Windows, automatically paste and select without AppActivate or destructive keys
+    if (process.platform === 'win32' && cleanTitle) {
+      try {
+        const tempVbs = path.join(os.tmpdir(), 'antigravity_paste_chat.vbs');
+        const vbsScript = [
+          'Set WshShell = CreateObject("WScript.Shell")',
+          'WScript.Sleep 450',
+          'WshShell.SendKeys "^v"',
+          'WScript.Sleep 400',
+          'WshShell.SendKeys "{ENTER}"',
+          'WScript.Sleep 450',
+          'WshShell.SendKeys "{ENTER}"',
+        ].join('\r\n');
+        fs.writeFileSync(tempVbs, vbsScript, 'utf8');
+        child_process.exec(`wscript.exe "${tempVbs}"`);
+      } catch (e) {
+        console.warn('[ConversationService] Keystroke paste error:', e);
+      }
+    }
+
+    // 5. Open native Antigravity Conversation Picker (Ctrl+Shift+A)
     try {
       await vscode.commands.executeCommand('antigravity.openConversationPicker');
     } catch {

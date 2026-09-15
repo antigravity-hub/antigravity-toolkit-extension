@@ -141,6 +141,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     const activeTier = activeAccount ? activeAccount.tier || 'Google AI Pro' : 'Free';
     const activeHealth = activeAccount ? Math.round(this.accountService.getAccountHealth(activeAccount)) : 0;
     const isAutoOn = autoSwitchStatus.enabled;
+    const extensionVersion =
+      vscode.extensions.getExtension('antigravity-hub.antigravity-toolkit')?.packageJSON?.version || '2.1.0';
 
     // Resolve Simplified Groups (Google Gemini & Anthropic Claude) matching Shield
     let geminiGroup: QuotaGroup | undefined;
@@ -1934,7 +1936,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           <path d="m9 12 2 2 4-4" />
         </svg>
         <span class="brand-title-text">Antigravity Shield</span>
-        <span class="brand-version-pill">v2.0.7</span>
+        <span class="brand-version-pill">v${extensionVersion}</span>
       </div>
       <div class="shield-status-indicator" title="${isShieldOnline ? 'Connected to local Shield daemon (Port 8045)' : 'Shield daemon unreachable on port 8045'}">
         <span class="shield-dot"></span>
