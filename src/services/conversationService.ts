@@ -12,6 +12,8 @@ export class ConversationService {
 
   private trajectoryMap: Map<string, { title: string; workspace?: string }> = new Map();
   private lastTrajectoryLoad = 0;
+  private cachedSessions: ConversationSession[] = [];
+  private lastSessionsScan = 0;
 
   private constructor() {}
 
@@ -20,6 +22,13 @@ export class ConversationService {
       ConversationService.instance = new ConversationService();
     }
     return ConversationService.instance;
+  }
+
+  /**
+   * Returns a cached session by ID instantly without disk scanning.
+   */
+  public getSessionById(sessionId: string): ConversationSession | undefined {
+    return this.cachedSessions.find((s) => s.id === sessionId);
   }
 
   /**
@@ -220,7 +229,12 @@ export class ConversationService {
    * Scans and returns all discovered conversations sorted by latest activity.
    * Internal subagents, background workers, and robotic prompts are filtered out.
    */
-  public async getConversations(): Promise<ConversationSession[]> {
+  public async getConversations(forceRefresh = false): Promise<ConversationSession[]> {
+    const now = Date.now();
+    if (!forceRefresh && this.cachedSessions.length > 0 && now - this.lastSessionsScan < 15000) {
+      return this.cachedSessions;
+    }
+
     this.loadTrajectorySummaries();
     const brainDirs = this.getBrainDirectories();
     const { names: knownWorkspaces, pathMap } = this.getKnownWorkspaces();
@@ -388,6 +402,8 @@ export class ConversationService {
     }
 
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    this.cachedSessions = sessions;
+    this.lastSessionsScan = now;
     return sessions;
   }
 
@@ -421,31 +437,31 @@ export class ConversationService {
       }
 
       // Automate keyboard selection on Windows via lightweight native wscript:
-      // 1. Wait for picker dialog (Ctrl+Shift+A) to load and focus (4500ms)
+      // 1. Wait for picker dialog (Ctrl+Shift+A) to load and focus (900ms)
       // 2. Activate Antigravity window to guarantee keystrokes hit the picker
       // 3. Clear any previous text (^a + Backspace) and paste search title (^v)
-      // 4. Wait for list filtering and item loading (1500ms)
+      // 4. Wait for list filtering and item loading (1000ms)
       // 5. DOWN arrow ({DOWN}) focuses the first matching conversation item in the list
-      // 6. Wait for focus state to settle (600ms)
+      // 6. Wait for focus state to settle (350ms)
       // 7. First ENTER ({ENTER}) selects the focused conversation
-      // 8. Wait for "Select where to open the conversation" modal to appear (1500ms)
+      // 8. Wait for "Select where to open the conversation" modal to appear (900ms)
       // 9. Second ENTER ({ENTER}) confirms "Open in current window"
       if (process.platform === 'win32') {
         try {
           const tempVbs = path.join(os.tmpdir(), 'antigravity_open_chat.vbs');
           const vbsScript = [
             'Set WshShell = CreateObject("WScript.Shell")',
-            'WScript.Sleep 4500',
+            'WScript.Sleep 900',
             'WshShell.AppActivate "Antigravity"',
-            'WScript.Sleep 200',
+            'WScript.Sleep 150',
             'WshShell.SendKeys "^a"',
             'WshShell.SendKeys "{BACKSPACE}"',
             'WshShell.SendKeys "^v"',
-            'WScript.Sleep 1500',
+            'WScript.Sleep 1000',
             'WshShell.SendKeys "{DOWN}"',
-            'WScript.Sleep 600',
+            'WScript.Sleep 350',
             'WshShell.SendKeys "{ENTER}"',
-            'WScript.Sleep 1500',
+            'WScript.Sleep 900',
             'WshShell.SendKeys "{ENTER}"',
           ].join('\r\n');
           fs.writeFileSync(tempVbs, vbsScript, 'utf8');
