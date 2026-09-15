@@ -2114,10 +2114,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               <span class="banner-pulse-dot"></span>
               <span class="banner-title">Switching to Chat Session</span>
             </div>
-            <span class="banner-countdown" id="banner-countdown">5s</span>
+            <span class="banner-countdown" id="banner-countdown">10s</span>
           </div>
           <div class="banner-msg">
-            Opening conversation... Please wait 5 seconds and avoid using keyboard or mouse.
+            Opening conversation... Please wait 10 seconds and avoid using keyboard or mouse.
           </div>
           <div class="banner-progress-bg">
             <div class="banner-progress-bar" id="banner-progress-bar"></div>
@@ -2309,13 +2309,13 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       const countdownEl = document.getElementById('banner-countdown');
       const progressBar = document.getElementById('banner-progress-bar');
 
-      const totalDurationMs = 5000;
+      const totalDurationMs = 10000;
       const startTime = Date.now();
 
       if (banner) {
         banner.style.display = 'block';
         if (progressBar) progressBar.style.width = '0%';
-        if (countdownEl) countdownEl.innerText = '5s';
+        if (countdownEl) countdownEl.innerText = '10s';
       }
 
       // Post message to backend extension

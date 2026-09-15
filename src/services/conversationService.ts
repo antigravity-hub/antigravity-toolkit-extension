@@ -421,28 +421,28 @@ export class ConversationService {
       }
 
       // Automate keyboard selection on Windows via lightweight native wscript:
-      // 1. Wait for picker dialog to open and focus (850ms)
+      // 1. Wait for picker dialog (Ctrl+Shift+A) to load and focus (4200ms as per system load)
       // 2. Clear any previous text (^a + Backspace) and paste search title (^v)
-      // 3. Wait for list filtering and item loading (800ms)
+      // 3. Wait for list filtering and item loading (1200ms)
       // 4. DOWN arrow ({DOWN}) focuses the first matching conversation item in the list
-      // 5. Wait for focus state to settle (350ms)
+      // 5. Wait for focus state to settle (450ms)
       // 6. First ENTER ({ENTER}) selects the focused conversation
-      // 7. Wait for "Select where to open the conversation" modal to appear (950ms)
+      // 7. Wait for "Select where to open the conversation" modal to appear (1200ms)
       // 8. Second ENTER ({ENTER}) confirms "Open in current window"
       if (process.platform === 'win32') {
         try {
           const tempVbs = path.join(os.tmpdir(), 'antigravity_open_chat.vbs');
           const vbsScript = [
             'Set WshShell = CreateObject("WScript.Shell")',
-            'WScript.Sleep 850',
+            'WScript.Sleep 4200',
             'WshShell.SendKeys "^a"',
             'WshShell.SendKeys "{BACKSPACE}"',
             'WshShell.SendKeys "^v"',
-            'WScript.Sleep 800',
+            'WScript.Sleep 1200',
             'WshShell.SendKeys "{DOWN}"',
-            'WScript.Sleep 350',
+            'WScript.Sleep 450',
             'WshShell.SendKeys "{ENTER}"',
-            'WScript.Sleep 950',
+            'WScript.Sleep 1200',
             'WshShell.SendKeys "{ENTER}"',
           ].join('\r\n');
           fs.writeFileSync(tempVbs, vbsScript, 'utf8');
