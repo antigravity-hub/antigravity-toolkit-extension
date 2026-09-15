@@ -503,9 +503,23 @@ export class ShieldBridge {
             {
               method: 'POST',
               headers,
-              timeout: 1000,
+              timeout: 1500,
             },
-            (res) => resolve(res.statusCode === 200 || res.statusCode === 204)
+            (res) => {
+              let resData = '';
+              res.on('data', (chunk) => (resData += chunk));
+              res.on('end', () => {
+                try {
+                  const json = JSON.parse(resData);
+                  if (json && json.command && this.commandHandler) {
+                    this.commandHandler(json.command);
+                  }
+                } catch {
+                  // ignore
+                }
+                resolve(res.statusCode === 200 || res.statusCode === 204);
+              });
+            }
           );
           req.on('error', () => resolve(false));
           req.on('timeout', () => {
@@ -521,6 +535,70 @@ export class ShieldBridge {
       }
     }
     return false;
+  }
+
+  private commandHandler: ((cmd: any) => Promise<void>) | null = null;
+  private isPollingCommands = false;
+
+  /**
+   * Starts a real-time long-polling loop to receive instant switch commands from Shield.
+   */
+  public startCommandListener(onCommand: (cmd: any) => Promise<void>): void {
+    this.commandHandler = onCommand;
+    if (this.isPollingCommands) return;
+    this.isPollingCommands = true;
+    this.pollCommandsLoop();
+  }
+
+  private async pollCommandsLoop(): Promise<void> {
+    while (this.isPollingCommands) {
+      try {
+        const baseUrl = await this.getBaseUrl();
+        const apiKey = this.getShieldApiKey();
+        const headers: Record<string, string> = {
+          'Accept': 'application/json',
+        };
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`;
+        }
+
+        const url = new URL('/toolkit/commands/poll?timeout=15', baseUrl);
+        const result = await new Promise<any>((resolve) => {
+          const req = http.get(url, { headers, timeout: 25000 }, (res) => {
+            if (res.statusCode !== 200) {
+              resolve(null);
+              return;
+            }
+            let data = '';
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => {
+              try {
+                resolve(JSON.parse(data));
+              } catch {
+                resolve(null);
+              }
+            });
+          });
+          req.on('error', () => resolve(null));
+          req.on('timeout', () => {
+            req.destroy();
+            resolve(null);
+          });
+        });
+
+        if (result && result.status === 'ok' && result.command && this.commandHandler) {
+          console.log('[ShieldBridge] Received command from Shield via two-way tunnel:', result.command);
+          try {
+            await this.commandHandler(result.command);
+          } catch (err) {
+            console.error('[ShieldBridge] Error handling command from Shield:', err);
+          }
+        }
+      } catch {
+        // short delay on error
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
   }
 
   /**

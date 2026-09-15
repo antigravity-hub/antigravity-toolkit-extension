@@ -421,28 +421,31 @@ export class ConversationService {
       }
 
       // Automate keyboard selection on Windows via lightweight native wscript:
-      // 1. Wait for picker dialog (Ctrl+Shift+A) to load and focus (4200ms as per system load)
-      // 2. Clear any previous text (^a + Backspace) and paste search title (^v)
-      // 3. Wait for list filtering and item loading (1200ms)
-      // 4. DOWN arrow ({DOWN}) focuses the first matching conversation item in the list
-      // 5. Wait for focus state to settle (450ms)
-      // 6. First ENTER ({ENTER}) selects the focused conversation
-      // 7. Wait for "Select where to open the conversation" modal to appear (1200ms)
-      // 8. Second ENTER ({ENTER}) confirms "Open in current window"
+      // 1. Wait for picker dialog (Ctrl+Shift+A) to load and focus (4500ms)
+      // 2. Activate Antigravity window to guarantee keystrokes hit the picker
+      // 3. Clear any previous text (^a + Backspace) and paste search title (^v)
+      // 4. Wait for list filtering and item loading (1500ms)
+      // 5. DOWN arrow ({DOWN}) focuses the first matching conversation item in the list
+      // 6. Wait for focus state to settle (600ms)
+      // 7. First ENTER ({ENTER}) selects the focused conversation
+      // 8. Wait for "Select where to open the conversation" modal to appear (1500ms)
+      // 9. Second ENTER ({ENTER}) confirms "Open in current window"
       if (process.platform === 'win32') {
         try {
           const tempVbs = path.join(os.tmpdir(), 'antigravity_open_chat.vbs');
           const vbsScript = [
             'Set WshShell = CreateObject("WScript.Shell")',
-            'WScript.Sleep 4200',
+            'WScript.Sleep 4500',
+            'WshShell.AppActivate "Antigravity"',
+            'WScript.Sleep 200',
             'WshShell.SendKeys "^a"',
             'WshShell.SendKeys "{BACKSPACE}"',
             'WshShell.SendKeys "^v"',
-            'WScript.Sleep 1200',
+            'WScript.Sleep 1500',
             'WshShell.SendKeys "{DOWN}"',
-            'WScript.Sleep 450',
+            'WScript.Sleep 600',
             'WshShell.SendKeys "{ENTER}"',
-            'WScript.Sleep 1200',
+            'WScript.Sleep 1500',
             'WshShell.SendKeys "{ENTER}"',
           ].join('\r\n');
           fs.writeFileSync(tempVbs, vbsScript, 'utf8');

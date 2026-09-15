@@ -187,6 +187,14 @@ export function activate(context: vscode.ExtensionContext) {
     accountService.syncFromShield().catch(() => {});
   }, 2000);
 
+  // 7. Full-Duplex Two-Way Tunnel Listener (Shield -> IDE Zero-Reload Switch)
+  shieldBridge.startCommandListener(async (cmd) => {
+    if (cmd && cmd.action === 'switch_account' && cmd.email) {
+      console.log(`[Toolkit Tunnel] Received switch command for ${cmd.email} from Shield!`);
+      await accountService.switchAccount(cmd.email);
+    }
+  });
+
   console.log('[Antigravity Toolkit 2.0] Activated successfully.');
 }
 
