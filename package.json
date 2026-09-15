@@ -2,7 +2,7 @@
   "name": "antigravity-toolkit",
   "displayName": "Antigravity Toolkit",
   "description": "Next-Gen IDE HUD for Google Antigravity: Cyber-Glass quota telemetry, autonomous multi-account rotation, and instant live session switching.",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "publisher": "antigravity-hub",
   "repository": {
     "type": "git",
@@ -94,6 +94,18 @@
         "title": "Evaluate & Auto-Rotate Now",
         "category": "Antigravity Toolkit",
         "icon": "$(sync)"
+      },
+      {
+        "command": "antigravityToolkit.restartLanguageServer",
+        "title": "Restart AI Language Server",
+        "category": "Antigravity Toolkit",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "antigravityToolkit.healAiConnection",
+        "title": "Auto-Heal AI Connection",
+        "category": "Antigravity Toolkit",
+        "icon": "$(pulse)"
       }
     ],
     "menus": {
@@ -152,6 +164,21 @@
           "type": "boolean",
           "default": true,
           "description": "Display a notification toast when an account is automatically rotated."
+        },
+        "antigravityToolkit.networkWatchdog.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Autonomously monitor internet/VPN connectivity and revive AI language server."
+        },
+        "antigravityToolkit.networkWatchdog.autoRestartLanguageServer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically restart Antigravity Language Server when network reconnects after a drop."
+        },
+        "antigravityToolkit.networkWatchdog.checkIntervalSeconds": {
+          "type": "number",
+          "default": 6,
+          "description": "Interval in seconds to probe network connectivity."
         }
       }
     }

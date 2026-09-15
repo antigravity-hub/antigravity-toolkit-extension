@@ -3,6 +3,7 @@ import { AccountService } from './services/accountService';
 import { QuotaService } from './services/quotaService';
 import { ConversationService } from './services/conversationService';
 import { AutoSwitchService } from './services/autoSwitchService';
+import { NetworkWatchdogService } from './services/networkWatchdogService';
 import { AccountTreeProvider } from './providers/accountTreeProvider';
 import { HistoryTreeProvider } from './providers/historyTreeProvider';
 import { QuotaWebviewProvider } from './providers/quotaWebviewProvider';
@@ -21,6 +22,9 @@ export function activate(context: vscode.ExtensionContext) {
   const quotaService = QuotaService.getInstance();
   const conversationService = ConversationService.getInstance();
   const autoSwitchService = AutoSwitchService.initialize(accountService, quotaService);
+  const networkWatchdog = NetworkWatchdogService.initialize();
+
+  context.subscriptions.push(networkWatchdog);
   context.subscriptions.push({ dispose: () => autoSwitchService.dispose() });
 
   // 2. Initialize Webview Provider (Single Unified View)
@@ -39,7 +43,12 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // 3. Status Bar HUD
-  const statusBar = new StatusBarManager(accountService, quotaService, autoSwitchService);
+  const statusBar = new StatusBarManager(
+    accountService,
+    quotaService,
+    autoSwitchService,
+    networkWatchdog
+  );
   context.subscriptions.push(statusBar);
 
   // 4. Register Commands
@@ -161,6 +170,34 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('antigravityToolkit.openQuotaDashboard', () => {
       vscode.commands.executeCommand('antigravity.views.quota.focus');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('antigravityToolkit.restartLanguageServer', async () => {
+      const ok = await networkWatchdog.restartLanguageServerSilently();
+      if (ok) {
+        vscode.window.showInformationMessage('⚡ Antigravity AI Language Server restarted.');
+      } else {
+        vscode.window.showErrorMessage('Failed to restart Antigravity Language Server.');
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('antigravityToolkit.healAiConnection', async () => {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Auto-healing Antigravity AI connection...',
+          cancellable: false,
+        },
+        async () => {
+          await networkWatchdog.probeConnectivity();
+          await networkWatchdog.restartLanguageServerSilently();
+          vscode.window.showInformationMessage('⚡ Antigravity AI connection refreshed and healed.');
+        }
+      );
     })
   );
 
