@@ -65,6 +65,15 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           }
           break;
         case 'openTranscript':
+          if (message.sessionId) {
+            const target =
+              this.conversationService.getSessionById(message.sessionId) ||
+              (await this.conversationService.getConversations()).find((s) => s.id === message.sessionId);
+            if (target) {
+              await this.conversationService.openTranscript(target);
+            }
+          }
+          break;
         case 'openConversation':
           if (message.sessionId) {
             const target =
@@ -371,12 +380,17 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                     <span class="node-date-tag ${datePillClass}">${dateTag}</span>
                     <span class="node-steps-tag">${s.stepCount} Steps</span>
                   </div>
-                  <button type="button" class="node-open-btn" id="btn-open-${s.id}" onclick="event.stopPropagation(); handleOpenChat(this, '${s.id}', '${safeTitle}')" title="Switch directly to this conversation in Antigravity Chat">
-                    <svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
-                      <path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/>
-                    </svg>
-                    <span>Open in Chat</span>
-                  </button>
+                  <div class="node-footer-btns" style="display: inline-flex; gap: 4px; align-items: center;">
+                    <button type="button" class="node-open-btn node-file-btn" onclick="event.stopPropagation(); openTranscriptOnly('${s.id}')" title="Open raw transcript file in editor" style="background: rgba(148, 163, 184, 0.1); border-color: rgba(148, 163, 184, 0.25); color: #cbd5e1;">
+                      <span>📄 Log</span>
+                    </button>
+                    <button type="button" class="node-open-btn" id="btn-open-${s.id}" onclick="event.stopPropagation(); handleOpenChat(this, '${s.id}', '${safeTitle}')" title="Open in Antigravity Chat panel">
+                      <svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+                        <path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/>
+                      </svg>
+                      <span>Open in Chat</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1757,87 +1771,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       animation: spin 0.6s linear infinite;
     }
 
-    /* Minimalist HUD banner for opening chat session */
-    .opening-chat-banner {
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      margin-bottom: 10px;
-      background: #0f172a;
-      border: 1px solid rgba(45, 212, 191, 0.4);
-      border-radius: 8px;
-      padding: 8px 10px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
-      animation: fadeIn 0.2s ease-out;
-    }
 
-    .banner-top-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 4px;
-    }
-
-    .banner-title-group {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .banner-pulse-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--seafoam);
-      box-shadow: 0 0 6px var(--seafoam);
-      animation: pulseDot 1.2s infinite ease-in-out;
-    }
-
-    .banner-title {
-      font-size: 10.5px;
-      font-weight: 700;
-      color: #f1f5f9;
-      letter-spacing: 0.2px;
-    }
-
-    .banner-countdown {
-      font-size: 10px;
-      font-weight: 700;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      color: var(--seafoam-light);
-      background: rgba(45, 212, 191, 0.12);
-      padding: 1px 6px;
-      border-radius: 4px;
-      border: 1px solid rgba(45, 212, 191, 0.25);
-    }
-
-    .banner-msg {
-      font-size: 9px;
-      color: #94a3b8;
-      line-height: 1.4;
-      margin-bottom: 6px;
-    }
-
-    .banner-progress-bg {
-      width: 100%;
-      height: 3px;
-      background: rgba(255, 255, 255, 0.08);
-      border-radius: 2px;
-      overflow: hidden;
-    }
-
-    .banner-progress-bar {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, var(--seafoam), #38bdf8);
-      border-radius: 2px;
-      transition: width 0.1s linear;
-    }
-
-    @keyframes pulseDot {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(0.8); }
-    }
 
     .node-date-tag {
       font-size: 8.5px;
@@ -2107,25 +2041,6 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     <!-- TAB 2: CHATS & PROJECT GRAPH -->
     <div id="tab-history" class="tab-content">
-      <!-- Minimalist Automation HUD Banner -->
-      <div id="opening-chat-banner" class="opening-chat-banner" style="display: none;">
-        <div class="banner-content">
-          <div class="banner-top-row">
-            <div class="banner-title-group">
-              <span class="banner-pulse-dot"></span>
-              <span class="banner-title">Switching to Chat Session</span>
-            </div>
-            <span class="banner-countdown" id="banner-countdown">4s</span>
-          </div>
-          <div class="banner-msg">
-            Opening conversation... Please wait 4 seconds and avoid using keyboard or mouse.
-          </div>
-          <div class="banner-progress-bg">
-            <div class="banner-progress-bar" id="banner-progress-bar"></div>
-          </div>
-        </div>
-      </div>
-
       <div class="subhead-title">
         <span>Conversations by Project</span>
         <span style="font-size: 9px; color: var(--seafoam-light);">${conversations.length} Total Sessions</span>
@@ -2285,81 +2200,31 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       vscode.postMessage({ command: 'triggerAutoRotate' });
     }
 
-    let isOpeningChat = false;
-    let openingCountdownInterval = null;
-
     function handleOpenChat(el, sessionId, title) {
-      if (!sessionId || isOpeningChat) return;
-      isOpeningChat = true;
+      if (!sessionId) return;
 
-      // 1. Visually lock and update clicked button
+      // Visually give fast, clean feedback on clicked button
       const targetBtn = document.getElementById('btn-open-' + sessionId);
       if (targetBtn) {
         targetBtn.classList.add('btn-opening');
-        targetBtn.disabled = true;
         targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Opening...';
-      }
-
-      // Lock all other buttons to prevent accidental rapid clicking
-      document.querySelectorAll('.node-open-btn').forEach(b => {
-        b.disabled = true;
-      });
-
-      // 2. Show the countdown HUD banner
-      const banner = document.getElementById('opening-chat-banner');
-      const countdownEl = document.getElementById('banner-countdown');
-      const progressBar = document.getElementById('banner-progress-bar');
-
-      const totalDurationMs = 4000;
-      const startTime = Date.now();
-
-      if (banner) {
-        banner.style.display = 'block';
-        if (progressBar) progressBar.style.width = '0%';
-        if (countdownEl) countdownEl.innerText = '4s';
+        setTimeout(() => {
+          targetBtn.classList.remove('btn-opening');
+          targetBtn.innerHTML = '<svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/></svg> <span>Open in Chat</span>';
+        }, 1200);
       }
 
       // Post message to backend extension
       vscode.postMessage({ command: 'openConversation', sessionId: sessionId });
+    }
 
-      if (openingCountdownInterval) {
-        clearInterval(openingCountdownInterval);
-      }
-
-      openingCountdownInterval = setInterval(() => {
-        const elapsed = Date.now() - startTime;
-        const remaining = Math.max(0, totalDurationMs - elapsed);
-        const progressPercent = Math.min(100, (elapsed / totalDurationMs) * 100);
-
-        if (progressBar) {
-          progressBar.style.width = progressPercent + '%';
-        }
-        if (countdownEl) {
-          countdownEl.innerText = Math.ceil(remaining / 1000) + 's';
-        }
-
-        if (remaining <= 0) {
-          clearInterval(openingCountdownInterval);
-          openingCountdownInterval = null;
-
-          if (banner) {
-            banner.style.display = 'none';
-          }
-
-          // Unlock all buttons
-          document.querySelectorAll('.node-open-btn').forEach(b => {
-            b.disabled = false;
-            b.classList.remove('btn-opening');
-            b.innerHTML = '<svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/></svg> <span>Open in Chat</span>';
-          });
-
-          isOpeningChat = false;
-        }
-      }, 100);
+    function openTranscriptOnly(sessionId) {
+      if (!sessionId) return;
+      vscode.postMessage({ command: 'openTranscript', sessionId: sessionId });
     }
 
     function openTranscript(sessionId) {
-      handleOpenChat(null, sessionId, '');
+      openTranscriptOnly(sessionId);
     }
 
     function toggleProject(pIdx) {

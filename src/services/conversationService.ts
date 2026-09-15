@@ -408,13 +408,17 @@ export class ConversationService {
   }
 
   /**
-   * Opens the conversation session directly in the Antigravity chat panel,
-   * switching workspace to a new window if it belongs to another project.
+   * Opens the conversation session in Antigravity IDE:
+   * 1. If it belongs to a different project workspace, prompts the user cleanly instead of forcing a new window.
+   * 2. Focuses/opens the Antigravity Chat panel.
+   * 3. Copies the session title to the clipboard for fast filtering.
+   * 4. Opens Antigravity's native Conversation Picker (Ctrl+Shift+A).
+   * 5. Never uses destructive keystroke automation (VBScript/SendKeys/AppActivate).
    */
   public async openConversation(session: ConversationSession): Promise<void> {
-    // 1. If conversation belongs to another project, open in a new window
+    // 1. If conversation belongs to another project, ask user before switching windows
     const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (session.workspacePath && currentWorkspaceFolder) {
+    if (session.workspacePath && currentWorkspaceFolder && fs.existsSync(session.workspacePath)) {
       const normCurrent = path.normalize(currentWorkspaceFolder).toLowerCase();
       const normTarget = path.normalize(session.workspacePath).toLowerCase();
       if (
@@ -422,75 +426,67 @@ export class ConversationService {
         !normCurrent.startsWith(normTarget + path.sep) &&
         !normTarget.startsWith(normCurrent + path.sep)
       ) {
-        const targetUri = vscode.Uri.file(session.workspacePath);
-        await vscode.commands.executeCommand('vscode.openFolder', targetUri, { forceNewWindow: true });
-        return;
-      }
-    }
-
-    // 2. Open via Antigravity Conversation Picker (Ctrl+Shift+A) with automated title matching
-    try {
-      // Put clean search term into clipboard for immediate matching
-      const searchTerm = session.title.replace(/[^\w\s\u0600-\u06FF]/g, ' ').trim().slice(0, 40);
-      if (searchTerm) {
-        await vscode.env.clipboard.writeText(searchTerm);
-      }
-
-      // Automate keyboard selection on Windows via lightweight native wscript:
-      // 1. Wait for picker dialog (Ctrl+Shift+A) to load and focus (900ms)
-      // 2. Activate Antigravity window to guarantee keystrokes hit the picker
-      // 3. Clear any previous text (^a + Backspace) and paste search title (^v)
-      // 4. Wait for list filtering and item loading (1000ms)
-      // 5. DOWN arrow ({DOWN}) focuses the first matching conversation item in the list
-      // 6. Wait for focus state to settle (350ms)
-      // 7. First ENTER ({ENTER}) selects the focused conversation
-      // 8. Wait for "Select where to open the conversation" modal to appear (900ms)
-      // 9. Second ENTER ({ENTER}) confirms "Open in current window"
-      if (process.platform === 'win32') {
-        try {
-          const tempVbs = path.join(os.tmpdir(), 'antigravity_open_chat.vbs');
-          const vbsScript = [
-            'Set WshShell = CreateObject("WScript.Shell")',
-            'WScript.Sleep 900',
-            'WshShell.AppActivate "Antigravity"',
-            'WScript.Sleep 150',
-            'WshShell.SendKeys "^a"',
-            'WshShell.SendKeys "{BACKSPACE}"',
-            'WshShell.SendKeys "^v"',
-            'WScript.Sleep 1000',
-            'WshShell.SendKeys "{DOWN}"',
-            'WScript.Sleep 350',
-            'WshShell.SendKeys "{ENTER}"',
-            'WScript.Sleep 900',
-            'WshShell.SendKeys "{ENTER}"',
-          ].join('\r\n');
-          fs.writeFileSync(tempVbs, vbsScript, 'utf8');
-          child_process.exec(`wscript.exe "${tempVbs}"`);
-        } catch (e) {
-          console.warn('[ConversationService] Failed to launch wscript keystroke automation:', e);
+        const choice = await vscode.window.showInformationMessage(
+          `Conversation belongs to workspace "${session.projectName}". How would you like to open it?`,
+          'Open Workspace in New Window',
+          'Open in Current Window',
+          'View Transcript File'
+        );
+        if (choice === 'Open Workspace in New Window') {
+          const targetUri = vscode.Uri.file(session.workspacePath);
+          await vscode.commands.executeCommand('vscode.openFolder', targetUri, { forceNewWindow: true });
+          return;
+        } else if (choice === 'View Transcript File') {
+          await this.openTranscript(session);
+          return;
+        } else if (!choice) {
+          return;
         }
       }
-
-      // Execute built-in conversation picker command asynchronously (DO NOT await, so keystroke automation runs concurrently!)
-      vscode.commands.executeCommand('antigravity.openConversationPicker').then(
-        () => {},
-        (err) => console.warn('[ConversationService] openConversationPicker error:', err)
-      );
-      return;
-    } catch {
-      // ignore
     }
 
-    // 3. Fallback: try opening chat panel
+    // 2. Focus / Open the Antigravity Chat / Agent panel
     try {
       await vscode.commands.executeCommand('antigravity.openChatView');
     } catch {
       try {
         await vscode.commands.executeCommand('antigravity.openAgent');
       } catch {
-        await this.openTranscript(session);
+        // ignore
       }
     }
+
+    // 3. Copy clean search title to clipboard for quick paste in picker
+    const cleanTitle = session.title.trim();
+    if (cleanTitle) {
+      await vscode.env.clipboard.writeText(cleanTitle);
+    }
+
+    // 4. Open native Antigravity Conversation Picker (Ctrl+Shift+A)
+    try {
+      await vscode.commands.executeCommand('antigravity.openConversationPicker');
+    } catch {
+      try {
+        await vscode.commands.executeCommand('openConversationPicker');
+      } catch {
+        try {
+          await vscode.commands.executeCommand('openConversationHistory');
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // 5. Notify the user with an option to open the raw transcript
+    const shortTitle = cleanTitle.length > 50 ? cleanTitle.slice(0, 47) + '...' : cleanTitle;
+    vscode.window.showInformationMessage(
+      `Copied "${shortTitle}" to clipboard. Press Ctrl+V to search in Past Conversations.`,
+      'Open Transcript File'
+    ).then((selected) => {
+      if (selected === 'Open Transcript File') {
+        this.openTranscript(session);
+      }
+    });
   }
 
   /**
