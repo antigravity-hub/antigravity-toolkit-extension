@@ -173,7 +173,7 @@ export function activate(context: vscode.ExtensionContext) {
     }, intervalSeconds * 1000);
   }
 
-  // 6. Proactive Heartbeat & Background Sync to Shield
+  // 6. Proactive Heartbeat & Background Sync to Shield (1.5s interval for fast command pickup)
   const shieldBridge = ShieldBridge.getInstance();
   const sendHb = () => {
     const active = accountService.getActiveAccount();
@@ -181,7 +181,7 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   sendHb();
-  heartbeatTimer = setInterval(sendHb, 20000);
+  heartbeatTimer = setInterval(sendHb, 1500);
 
   setTimeout(() => {
     accountService.syncFromShield().catch(() => {});
@@ -192,6 +192,11 @@ export function activate(context: vscode.ExtensionContext) {
     if (cmd && cmd.action === 'switch_account' && cmd.email) {
       console.log(`[Toolkit Tunnel] Received switch command for ${cmd.email} from Shield!`);
       await accountService.switchAccount(cmd.email);
+      try {
+        await vscode.commands.executeCommand('ag.switchAccountDirect', cmd.email);
+      } catch {
+        // switchboard might not be active, safe to ignore
+      }
     }
   });
 

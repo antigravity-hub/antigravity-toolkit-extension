@@ -488,9 +488,10 @@ export class ShieldBridge {
     }
 
     const targets = [
+      { port: 8765, path: '/api/toolkit/heartbeat' },
       { port: 8045, path: '/api/toolkit/heartbeat' },
-      { port: 8045, path: '/toolkit/heartbeat' },
       { port: 8765, path: '/toolkit/heartbeat' },
+      { port: 8045, path: '/toolkit/heartbeat' },
       { port: 19527, path: '/api/toolkit/heartbeat' },
     ];
 
@@ -562,7 +563,8 @@ export class ShieldBridge {
           headers['Authorization'] = `Bearer ${apiKey}`;
         }
 
-        const url = new URL('/toolkit/commands/poll?timeout=15', baseUrl);
+        const pollPath = baseUrl.includes('/api') ? '/toolkit/commands/poll?timeout=15' : '/api/toolkit/commands/poll?timeout=15';
+        const url = new URL(pollPath, baseUrl);
         const result = await new Promise<any>((resolve) => {
           const req = http.get(url, { headers, timeout: 25000 }, (res) => {
             if (res.statusCode !== 200) {

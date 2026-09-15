@@ -191,10 +191,32 @@ export class AccountService {
 
       const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
       if (appData) {
-        const dbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
-        if (fs.existsSync(dbPath)) {
-          const sql = `UPDATE ItemTable SET value = CAST(X'${hexAuth}' AS TEXT) WHERE key = 'antigravityAuthStatus'; UPDATE ItemTable SET value = CAST(X'${hexUss}' AS TEXT) WHERE key = 'antigravityUnifiedStateSync.userStatus';`;
-          child_process.exec(`sqlite3 "${dbPath}" "${sql}"`, () => {});
+        const candidateDbPaths = [
+          path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
+          path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
+        ];
+        for (const dbPath of candidateDbPaths) {
+          if (fs.existsSync(dbPath)) {
+            let written = false;
+            try {
+              const sqlite3Module = require(path.join(vscode.env.appRoot, 'node_modules', '@vscode', 'sqlite3'));
+              const db = new sqlite3Module.Database(dbPath);
+              db.serialize(() => {
+                db.run(`INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityAuthStatus', CAST(X'${hexAuth}' AS TEXT))`);
+                db.run(`INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityUnifiedStateSync.userStatus', CAST(X'${hexUss}' AS TEXT))`, () => {
+                  db.close();
+                });
+              });
+              written = true;
+            } catch {
+              // fallback
+            }
+
+            if (!written) {
+              const sql = `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityAuthStatus', CAST(X'${hexAuth}' AS TEXT)); INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityUnifiedStateSync.userStatus', CAST(X'${hexUss}' AS TEXT));`;
+              child_process.exec(`sqlite3 "${dbPath}" "${sql}"`, () => {});
+            }
+          }
         }
       }
     } catch {

@@ -23,6 +23,7 @@ async function main() {
     await ctx.rebuild();
     await ctx.dispose();
     console.log('[esbuild] Build finished successfully.');
+    process.exit(0);
   }
 }
 
