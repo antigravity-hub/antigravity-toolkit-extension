@@ -3,55 +3,21 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as child_process from 'child_process';
+import { promisify } from 'util';
 import { Account } from '../types';
 import { LanguageServerClient } from '../bridge/languageServerClient';
 import { ShieldBridge } from '../bridge/shieldBridge';
+import {
+  parseProtoFields,
+  updateUserStatusProto,
+  wrapUserStatusInUSS,
+  wrapUserStatusForVscdb,
+  getFallbackUserStatusProto,
+  encodeVarintField,
+  encodeString,
+} from '../utils/protobufHelper';
 
-// ─── Protobuf Serialization Helpers for UnifiedStateSync ───
-function encodeVarint(value: number): Buffer {
-  const bytes: number[] = [];
-  if (value === 0) return Buffer.from([0]);
-  while (value > 0x7f) {
-    bytes.push((value & 0x7f) | 0x80);
-    value = Math.floor(value / 128);
-  }
-  bytes.push(value & 0x7f);
-  return Buffer.from(bytes);
-}
-
-function encodeTag(fieldNumber: number, wireType: number): Buffer {
-  return encodeVarint((fieldNumber << 3) | wireType);
-}
-
-function encodeString(fieldNumber: number, value: string): Buffer {
-  const buf = Buffer.from(value, 'utf-8');
-  return Buffer.concat([encodeTag(fieldNumber, 2), encodeVarint(buf.length), buf]);
-}
-
-function encodeVarintField(fieldNumber: number, value: number): Buffer {
-  return Buffer.concat([encodeTag(fieldNumber, 0), encodeVarint(value)]);
-}
-
-function encodeMessage(fieldNumber: number, payload: Buffer): Buffer {
-  return Buffer.concat([encodeTag(fieldNumber, 2), encodeVarint(payload.length), payload]);
-}
-
-function buildUserStatusUpdate(name: string, email: string): string {
-  const proto = Buffer.concat([
-    encodeVarintField(2, 1),
-    encodeString(3, name),
-    encodeString(7, email),
-  ]);
-  const row = encodeString(1, proto.toString('base64'));
-  const update = Buffer.concat([
-    encodeString(1, 'userStatusSentinelKey'),
-    encodeMessage(2, row),
-  ]);
-  return Buffer.concat([
-    encodeString(1, 'uss-userStatus'),
-    encodeMessage(5, update),
-  ]).toString('base64');
-}
+const execAsync = promisify(child_process.exec);
 
 const STORAGE_KEY_ACCOUNTS = 'antigravity_toolkit_accounts';
 const STORAGE_KEY_ACTIVE = 'antigravity_toolkit_active_email';
@@ -170,12 +136,14 @@ export class AccountService {
       ? Math.floor(target.token.expiryTimestamp > 10000000000 ? target.token.expiryTimestamp / 1000 : target.token.expiryTimestamp)
       : Math.floor(Date.now() / 1000) + 3600;
 
-    // 1. In-memory USS Hot-Swap
+    // 1. In-memory USS Hot-Swap with Full Model Preservation
+    let updatedProto: Buffer | null = null;
     try {
       const uss = (vscode as any).antigravityUnifiedStateSync;
       if (uss) {
-        // Push user status update (name and email)
-        const updateB64 = buildUserStatusUpdate(targetName, target.email);
+        // Resolve full UserStatus preserving all 14 cascade models
+        updatedProto = await this.getFullUserStatusProto(targetName, target.email);
+        const updateB64 = wrapUserStatusInUSS(updatedProto);
         await uss.pushSerializedUpdateIPC(updateB64);
 
         // Set OAuth token info in USS
@@ -208,20 +176,24 @@ export class AccountService {
       console.warn('[AccountService] Language Server hot-swap warning:', lsErr);
     }
 
-    // 3. Write legacy auth status to SQLite state.vscdb
+    // 3. Write preserved auth status to SQLite state.vscdb
     try {
-      const proto = Buffer.concat([
-        encodeVarintField(2, 1),
-        encodeString(3, targetName),
-        encodeString(7, target.email),
-      ]);
-      const json = JSON.stringify({ name: targetName, apiKey: accessToken, email: target.email, userStatusProtoBinaryBase64: proto.toString('base64') });
-      const hexValue = Buffer.from(json, 'utf-8').toString('hex');
+      const protoToSave = updatedProto || (await this.getFullUserStatusProto(targetName, target.email));
+      const json = JSON.stringify({
+        name: targetName,
+        apiKey: accessToken,
+        email: target.email,
+        userStatusProtoBinaryBase64: protoToSave.toString('base64'),
+      });
+      const hexAuth = Buffer.from(json, 'utf-8').toString('hex');
+      const vscdbUss = wrapUserStatusForVscdb(protoToSave);
+      const hexUss = Buffer.from(vscdbUss, 'utf-8').toString('hex');
+
       const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
       if (appData) {
         const dbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
         if (fs.existsSync(dbPath)) {
-          const sql = `UPDATE ItemTable SET value = CAST(X'${hexValue}' AS TEXT) WHERE key = 'antigravityAuthStatus';`;
+          const sql = `UPDATE ItemTable SET value = CAST(X'${hexAuth}' AS TEXT) WHERE key = 'antigravityAuthStatus'; UPDATE ItemTable SET value = CAST(X'${hexUss}' AS TEXT) WHERE key = 'antigravityUnifiedStateSync.userStatus';`;
           child_process.exec(`sqlite3 "${dbPath}" "${sql}"`, () => {});
         }
       }
@@ -237,6 +209,95 @@ export class AccountService {
     this.onDidChangeAccountsEmitter.fire();
 
     return true;
+  }
+
+  /**
+   * Resolves the complete UserStatus protobuf containing all 14 cascade models.
+   * Priority:
+   * 1. In-memory USS live state (uss.UserStatus.getUserStatus())
+   * 2. Persistent globalState cache
+   * 3. SQLite state.vscdb (antigravityUnifiedStateSync.userStatus)
+   * 4. Bundled fallback template containing all 14 models
+   */
+  private async getFullUserStatusProto(targetName: string, targetEmail: string): Promise<Buffer> {
+    let baseProto: Buffer | null = null;
+
+    // 1. Try in-memory USS UserStatus (live)
+    try {
+      const uss = (vscode as any).antigravityUnifiedStateSync;
+      if (uss?.UserStatus?.getUserStatus) {
+        const rawB64 = await uss.UserStatus.getUserStatus();
+        if (typeof rawB64 === 'string' && rawB64.length > 500) {
+          const candidate = Buffer.from(rawB64, 'base64');
+          if (candidate.length > 500) {
+            baseProto = candidate;
+          }
+        }
+      }
+    } catch {}
+
+    // 2. Try persistent cache from globalState
+    if (!baseProto) {
+      const cachedB64 = this.context.globalState.get<string>('antigravity_user_status_proto_cache');
+      if (cachedB64 && cachedB64.length > 500) {
+        try {
+          const candidate = Buffer.from(cachedB64, 'base64');
+          if (candidate.length > 500) {
+            baseProto = candidate;
+          }
+        } catch {}
+      }
+    }
+
+    // 3. Try reading SQLite state.vscdb directly
+    if (!baseProto) {
+      try {
+        const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
+        if (appData) {
+          const dbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+          if (fs.existsSync(dbPath)) {
+            const cmd = `python -c "import sqlite3, base64; cur=sqlite3.connect(r'${dbPath}').cursor(); cur.execute('SELECT value FROM ItemTable WHERE key=\\'antigravityUnifiedStateSync.userStatus\\''); r=cur.fetchone(); print(r[0] if r else '')"`;
+            const { stdout } = await execAsync(cmd, { timeout: 3000 }).catch(() => ({ stdout: '' }));
+            if (stdout && stdout.trim().length > 500) {
+              const raw = Buffer.from(stdout.trim(), 'base64');
+              const top = parseProtoFields(raw);
+              if (top.length > 0 && top[0].wt === 2) {
+                const wrapper = parseProtoFields(top[0].data);
+                const row = parseProtoFields(wrapper[1]?.data || Buffer.alloc(0));
+                if (row.length > 0 && row[0].wt === 2) {
+                  baseProto = Buffer.from(row[0].data.toString('utf-8'), 'base64');
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // 4. Try bundled fallback template with all 14 models
+    if (!baseProto || baseProto.length < 500) {
+      const fallback = getFallbackUserStatusProto();
+      if (fallback && fallback.length > 500) {
+        baseProto = fallback;
+      }
+    }
+
+    // If still null (extreme edge case), construct baseline
+    if (!baseProto || baseProto.length < 50) {
+      baseProto = Buffer.concat([
+        encodeVarintField(2, 1),
+        encodeString(3, targetName),
+        encodeString(7, targetEmail),
+      ]);
+    }
+
+    // Update with new account name and email while preserving Field 33 (14 models)
+    const updated = updateUserStatusProto(baseProto, targetName, targetEmail);
+
+    // Save to globalState cache
+    await this.context.globalState.update('antigravity_user_status_proto_cache', updated.toString('base64'));
+
+    return updated;
   }
 
   /**

@@ -1,4 +1,5 @@
 import * as http from 'http';
+import * as https from 'https';
 import * as child_process from 'child_process';
 import { promisify } from 'util';
 import { Account } from '../types';
@@ -128,7 +129,9 @@ export class LanguageServerClient {
   }
 
   /**
-   * Performs an HTTP POST call to an Antigravity Language Server endpoint.
+   * Performs a POST call to an Antigravity Language Server endpoint.
+   * Language servers run an HTTPS Connect-RPC server on their primary port (--https_server_port).
+   * Attempts HTTPS first (with rejectUnauthorized: false), falling back to HTTP if SSL fails.
    */
   public async callLs<T = any>(
     port: number,
@@ -142,46 +145,58 @@ export class LanguageServerClient {
       : `/exa.language_server_pb.LanguageServerService/${method}`;
     const bodyStr = JSON.stringify(body);
 
-    return new Promise((resolve) => {
-      const req = http.request(
-        {
-          hostname: '127.0.0.1',
-          port,
-          path: fullPath,
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(bodyStr),
-            'Connect-Protocol-Version': '1',
-            'X-Codeium-Csrf-Token': csrfToken,
+    const makeRequest = (isHttps: boolean): Promise<T | null> => {
+      const transport: any = isHttps ? https : http;
+      return new Promise((resolve) => {
+        const req = transport.request(
+          {
+            hostname: '127.0.0.1',
+            port,
+            path: fullPath,
+            method: 'POST',
+            rejectUnauthorized: false,
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(bodyStr),
+              'Connect-Protocol-Version': '1',
+              'X-Codeium-Csrf-Token': csrfToken,
+            },
+            timeout: timeoutMs,
           },
-          timeout: timeoutMs,
-        },
-        (res) => {
-          let data = '';
-          res.on('data', (chunk) => (data += chunk));
-          res.on('end', () => {
-            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-              try {
-                resolve(JSON.parse(data));
-              } catch {
-                resolve(data as any);
+          (res: http.IncomingMessage) => {
+            let data = '';
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => {
+              if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                try {
+                  resolve(JSON.parse(data));
+                } catch {
+                  resolve(data as any);
+                }
+              } else {
+                resolve(null);
               }
-            } else {
-              resolve(null);
-            }
-          });
-        }
-      );
+            });
+          }
+        );
 
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => {
-        req.destroy();
-        resolve(null);
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => {
+          req.destroy();
+          resolve(null);
+        });
+        req.write(bodyStr);
+        req.end();
       });
-      req.write(bodyStr);
-      req.end();
-    });
+    };
+
+    // Try HTTPS first (standard for Antigravity Language Server Connect-RPC)
+    const httpsRes = await makeRequest(true);
+    if (httpsRes !== null) {
+      return httpsRes;
+    }
+    // Fall back to HTTP for plain HTTP endpoints
+    return makeRequest(false);
   }
 
   /**
@@ -203,6 +218,43 @@ export class LanguageServerClient {
     );
 
     return anySuccess;
+  }
+
+  /**
+   * Triggers a soft restart of active Language Server processes in memory.
+   */
+  public async callRestart(): Promise<boolean> {
+    const endpoints = await this.findLSEndpoints(true);
+    if (endpoints.length === 0) return false;
+
+    let anySuccess = false;
+    await Promise.allSettled(
+      endpoints.map(async (ep) => {
+        const res = await this.callLs(ep.port, ep.csrfToken, 'Restart', {});
+        if (res !== null) {
+          anySuccess = true;
+        }
+      })
+    );
+    return anySuccess;
+  }
+
+  /**
+   * Fetches cascade model config data directly from the active language server.
+   */
+  public async getCascadeModelConfigData(): Promise<any | null> {
+    const endpoints = await this.findLSEndpoints();
+    for (const ep of endpoints) {
+      try {
+        const res = await this.callLs(ep.port, ep.csrfToken, 'GetCascadeModelConfigData', {});
+        if (res && res.clientModelConfigs) {
+          return res;
+        }
+      } catch {
+        // try next
+      }
+    }
+    return null;
   }
 
   /**
