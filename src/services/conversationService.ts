@@ -423,10 +423,25 @@ export class ConversationService {
       // Execute built-in conversation picker command
       await vscode.commands.executeCommand('antigravity.openConversationPicker');
 
-      // Automate keyboard selection on Windows
+      // Automate keyboard selection on Windows:
+      // 1. Wait for picker to open and focus (600ms)
+      // 2. Paste search title into picker (^v)
+      // 3. Wait for list filtering and item selection (650ms)
+      // 4. First ENTER selects the matched conversation
+      // 5. Wait for "Select where to open the conversation" modal to appear (750ms)
+      // 6. Second ENTER confirms "Open in current window"
       if (process.platform === 'win32') {
-        const ps = `Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 180; [System.Windows.Forms.SendKeys]::SendWait('^v'); Start-Sleep -Milliseconds 220; [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')`;
-        child_process.exec(`powershell -NoProfile -Command "${ps}"`);
+        const psScript = `
+Add-Type -AssemblyName System.Windows.Forms;
+Start-Sleep -Milliseconds 600;
+[System.Windows.Forms.SendKeys]::SendWait('^v');
+Start-Sleep -Milliseconds 650;
+[System.Windows.Forms.SendKeys]::SendWait('{ENTER}');
+Start-Sleep -Milliseconds 750;
+[System.Windows.Forms.SendKeys]::SendWait('{ENTER}');
+`;
+        const b64 = Buffer.from(psScript, 'utf16le').toString('base64');
+        child_process.exec(`powershell -NoProfile -NonInteractive -EncodedCommand ${b64}`);
       }
       return;
     } catch {
