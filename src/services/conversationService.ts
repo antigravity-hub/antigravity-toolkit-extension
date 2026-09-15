@@ -420,29 +420,37 @@ export class ConversationService {
         await vscode.env.clipboard.writeText(searchTerm);
       }
 
-      // Execute built-in conversation picker command
-      await vscode.commands.executeCommand('antigravity.openConversationPicker');
-
-      // Automate keyboard selection on Windows:
-      // 1. Wait for picker to open and focus (600ms)
+      // Automate keyboard selection on Windows via lightweight native wscript:
+      // 1. Wait for picker dialog to open and focus (750ms)
       // 2. Paste search title into picker (^v)
       // 3. Wait for list filtering and item selection (650ms)
       // 4. First ENTER selects the matched conversation
-      // 5. Wait for "Select where to open the conversation" modal to appear (750ms)
+      // 5. Wait for "Select where to open the conversation" modal to appear (800ms)
       // 6. Second ENTER confirms "Open in current window"
       if (process.platform === 'win32') {
-        const psScript = `
-Add-Type -AssemblyName System.Windows.Forms;
-Start-Sleep -Milliseconds 600;
-[System.Windows.Forms.SendKeys]::SendWait('^v');
-Start-Sleep -Milliseconds 650;
-[System.Windows.Forms.SendKeys]::SendWait('{ENTER}');
-Start-Sleep -Milliseconds 750;
-[System.Windows.Forms.SendKeys]::SendWait('{ENTER}');
-`;
-        const b64 = Buffer.from(psScript, 'utf16le').toString('base64');
-        child_process.exec(`powershell -NoProfile -NonInteractive -EncodedCommand ${b64}`);
+        try {
+          const tempVbs = path.join(os.tmpdir(), 'antigravity_open_chat.vbs');
+          const vbsScript = [
+            'Set WshShell = CreateObject("WScript.Shell")',
+            'WScript.Sleep 750',
+            'WshShell.SendKeys "^v"',
+            'WScript.Sleep 650',
+            'WshShell.SendKeys "{ENTER}"',
+            'WScript.Sleep 800',
+            'WshShell.SendKeys "{ENTER}"',
+          ].join('\r\n');
+          fs.writeFileSync(tempVbs, vbsScript, 'utf8');
+          child_process.exec(`wscript.exe "${tempVbs}"`);
+        } catch (e) {
+          console.warn('[ConversationService] Failed to launch wscript keystroke automation:', e);
+        }
       }
+
+      // Execute built-in conversation picker command asynchronously (DO NOT await, so keystroke automation runs concurrently!)
+      vscode.commands.executeCommand('antigravity.openConversationPicker').then(
+        () => {},
+        (err) => console.warn('[ConversationService] openConversationPicker error:', err)
+      );
       return;
     } catch {
       // ignore

@@ -2309,13 +2309,13 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       const countdownEl = document.getElementById('banner-countdown');
       const progressBar = document.getElementById('banner-progress-bar');
 
-      const totalDurationMs = 3800;
+      const totalDurationMs = 3200;
       const startTime = Date.now();
 
       if (banner) {
         banner.style.display = 'block';
         if (progressBar) progressBar.style.width = '0%';
-        if (countdownEl) countdownEl.innerText = '4s';
+        if (countdownEl) countdownEl.innerText = '3s';
       }
 
       // Post message to backend extension
