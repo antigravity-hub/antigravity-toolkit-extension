@@ -412,12 +412,23 @@ export class ConversationService {
       }
     }
 
-    // 2. In the current window, try the native IDE bridge command
+    // 2. Open via Antigravity Conversation Picker (Ctrl+Shift+A) with automated title matching
     try {
-      const success = await vscode.commands.executeCommand('antigravity.openConversationById', session.id);
-      if (success) {
-        return;
+      // Put clean search term into clipboard for immediate matching
+      const searchTerm = session.title.replace(/[^\w\s\u0600-\u06FF]/g, ' ').trim().slice(0, 40);
+      if (searchTerm) {
+        await vscode.env.clipboard.writeText(searchTerm);
       }
+
+      // Execute built-in conversation picker command
+      await vscode.commands.executeCommand('antigravity.openConversationPicker');
+
+      // Automate keyboard selection on Windows
+      if (process.platform === 'win32') {
+        const ps = `Add-Type -AssemblyName System.Windows.Forms; Start-Sleep -Milliseconds 180; [System.Windows.Forms.SendKeys]::SendWait('^v'); Start-Sleep -Milliseconds 220; [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')`;
+        child_process.exec(`powershell -NoProfile -Command "${ps}"`);
+      }
+      return;
     } catch {
       // ignore
     }
