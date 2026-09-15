@@ -69,7 +69,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             const sessions = await this.conversationService.getConversations();
             const target = sessions.find((s) => s.id === message.sessionId);
             if (target) {
-              await this.conversationService.openTranscript(target);
+              await this.conversationService.openConversation(target);
             }
           }
           break;

@@ -66,6 +66,7 @@ export interface ConversationSession {
   model?: string;
   previewText?: string;
   projectName?: string;
+  workspacePath?: string;
   tokenEstimate?: number;
 }
 

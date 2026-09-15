@@ -46,10 +46,11 @@ export class ConversationService {
   }
 
   /**
-   * Discovers all real project/workspace folder names from IDE storage and active workspace.
+   * Discovers all real project/workspace folder names and absolute paths from IDE storage and active workspace.
    */
-  private getKnownWorkspaceNames(): string[] {
-    const known = new Set<string>();
+  private getKnownWorkspaces(): { names: string[]; pathMap: Map<string, string> } {
+    const names = new Set<string>();
+    const pathMap = new Map<string, string>();
     const ignored = new Set([
       'appdata', 'desktop', 'public', 'users', 'references', 'bot codes', 'v4',
       'programs', 'antigravity', 'gro', 'site data', 'site', 'scratch', 'logs',
@@ -60,7 +61,8 @@ export class ConversationService {
     if (vscode.workspace.workspaceFolders) {
       for (const folder of vscode.workspace.workspaceFolders) {
         if (folder.name && !ignored.has(folder.name.toLowerCase())) {
-          known.add(folder.name);
+          names.add(folder.name);
+          pathMap.set(folder.name.toLowerCase(), folder.uri.fsPath);
         }
       }
     }
@@ -88,9 +90,13 @@ export class ConversationService {
                 if (folderUrl) {
                   const unquoted = decodeURIComponent(folderUrl);
                   const clean = unquoted.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
-                  const bName = path.basename(path.normalize(clean));
+                  const norm = path.normalize(clean);
+                  const bName = path.basename(norm);
                   if (bName && bName.length > 2 && !ignored.has(bName.toLowerCase())) {
-                    known.add(bName);
+                    names.add(bName);
+                    if (!pathMap.has(bName.toLowerCase())) {
+                      pathMap.set(bName.toLowerCase(), norm);
+                    }
                   }
                 }
               } catch {
@@ -130,11 +136,11 @@ export class ConversationService {
       'atrclick',
     ];
     for (const p of fallbackProjects) {
-      known.add(p);
+      names.add(p);
     }
 
-    // Sort by length descending so longer specific names match first
-    return Array.from(known).sort((a, b) => b.length - a.length);
+    const sortedNames = Array.from(names).sort((a, b) => b.length - a.length);
+    return { names: sortedNames, pathMap };
   }
 
   /**
@@ -212,13 +218,26 @@ export class ConversationService {
 
   /**
    * Scans and returns all discovered conversations sorted by latest activity.
+   * Internal subagents, background workers, and robotic prompts are filtered out.
    */
   public async getConversations(): Promise<ConversationSession[]> {
     this.loadTrajectorySummaries();
     const brainDirs = this.getBrainDirectories();
-    const knownWorkspaces = this.getKnownWorkspaceNames();
+    const { names: knownWorkspaces, pathMap } = this.getKnownWorkspaces();
     const sessions: ConversationSession[] = [];
     const seenIds = new Set<string>();
+
+    const isSubagentText = (t: string): boolean => {
+      if (!t) return false;
+      const lower = t.trim().toLowerCase();
+      return (
+        lower.startsWith('you are ') ||
+        lower.startsWith('comprehensive extraction, nlp-driven') ||
+        lower.includes('teamwork_preview_victory_auditor') ||
+        lower.includes('acceptance gate, regression verification') ||
+        lower.includes('working directory:')
+      );
+    };
 
     for (const brainDir of brainDirs) {
       try {
@@ -258,6 +277,7 @@ export class ConversationService {
 
           let projectName = '';
           let tokenEstimate = 0;
+          let sampleContent = '';
 
           try {
             const content = fs.readFileSync(transcriptPath, 'utf8');
@@ -266,7 +286,7 @@ export class ConversationService {
             tokenEstimate = Math.round(content.length / 3.8);
 
             // Accurate matching: match against real known workspaces in transcript content
-            const sampleContent = content.slice(0, 120000);
+            sampleContent = content.slice(0, 120000);
             const sampleLower = sampleContent.toLowerCase();
 
             for (const kw of knownWorkspaces) {
@@ -312,7 +332,33 @@ export class ConversationService {
             continue;
           }
 
+          // Filter out subagents and background worker tasks
+          if (isSubagentText(finalTitle) || isSubagentText(previewText)) {
+            continue;
+          }
+
           seenIds.add(convId);
+
+          let workspacePath: string | undefined;
+          if (projectName) {
+            workspacePath = pathMap.get(projectName.toLowerCase());
+          }
+          if (!workspacePath && sampleContent) {
+            const fileMatch = sampleContent.match(/file:\/\/\/([a-zA-Z]:\/[^\s"'>\\]+)/i);
+            if (fileMatch) {
+              const cleanUri = decodeURIComponent(fileMatch[1]).replace(/\//g, path.sep);
+              for (const kw of knownWorkspaces) {
+                const idx = cleanUri.toLowerCase().indexOf(kw.toLowerCase());
+                if (idx !== -1) {
+                  workspacePath = cleanUri.slice(0, idx + kw.length);
+                  if (!projectName || projectName === 'General Workspace') {
+                    projectName = kw;
+                  }
+                  break;
+                }
+              }
+            }
+          }
 
           const date = new Date(mtime);
           const dateFormatted = date.toLocaleDateString(undefined, {
@@ -332,6 +378,7 @@ export class ConversationService {
             stepCount,
             previewText,
             projectName: projectName || 'General Workspace',
+            workspacePath,
             tokenEstimate: tokenEstimate || stepCount * 1400,
           });
         }
@@ -342,6 +389,49 @@ export class ConversationService {
 
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
     return sessions;
+  }
+
+  /**
+   * Opens the conversation session directly in the Antigravity chat panel,
+   * switching workspace to a new window if it belongs to another project.
+   */
+  public async openConversation(session: ConversationSession): Promise<void> {
+    // 1. If conversation belongs to another project, open in a new window
+    const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (session.workspacePath && currentWorkspaceFolder) {
+      const normCurrent = path.normalize(currentWorkspaceFolder).toLowerCase();
+      const normTarget = path.normalize(session.workspacePath).toLowerCase();
+      if (
+        normCurrent !== normTarget &&
+        !normCurrent.startsWith(normTarget + path.sep) &&
+        !normTarget.startsWith(normCurrent + path.sep)
+      ) {
+        const targetUri = vscode.Uri.file(session.workspacePath);
+        await vscode.commands.executeCommand('vscode.openFolder', targetUri, { forceNewWindow: true });
+        return;
+      }
+    }
+
+    // 2. In the current window, try the native IDE bridge command
+    try {
+      const success = await vscode.commands.executeCommand('antigravity.openConversationById', session.id);
+      if (success) {
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    // 3. Fallback: try opening chat panel
+    try {
+      await vscode.commands.executeCommand('antigravity.openChatView');
+    } catch {
+      try {
+        await vscode.commands.executeCommand('antigravity.openAgent');
+      } catch {
+        await this.openTranscript(session);
+      }
+    }
   }
 
   /**
