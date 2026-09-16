@@ -2301,24 +2301,24 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           if (targetBtn.classList.contains('btn-opening')) {
             targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Pasting Title...';
           }
-        }, 500);
+        }, 400);
 
         setTimeout(() => {
           if (targetBtn.classList.contains('btn-opening')) {
             targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Selecting (↓)...';
           }
-        }, 1400);
+        }, 1000);
 
         setTimeout(() => {
           if (targetBtn.classList.contains('btn-opening')) {
             targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Entering (↵)...';
           }
-        }, 1900);
+        }, 1400);
 
         setTimeout(() => {
           targetBtn.classList.remove('btn-opening');
           targetBtn.innerHTML = '<svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/></svg> <span>Open in Chat</span>';
-        }, 2600);
+        }, 2000);
       }
 
       // Post message to backend extension

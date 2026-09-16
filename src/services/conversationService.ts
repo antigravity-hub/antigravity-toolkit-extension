@@ -552,23 +552,23 @@ export class ConversationService {
       try {
         const tempVbs = path.join(os.tmpdir(), `ag_select_${Date.now()}.vbs`);
         // Fast, reliable step-by-step automation:
-        // 1. Wait 500ms for the native picker UI and search input to render.
+        // 1. Wait 400ms for the native picker UI and search input to render.
         // 2. Send Ctrl+V and Shift+Insert to paste the title into the search box.
-        // 3. Wait 900ms for fuzzy search filtering.
+        // 3. Wait 600ms for fuzzy search filtering.
         // 4. Send Down Arrow to highlight the top filtered conversation.
-        // 5. Wait 500ms.
+        // 5. Wait 400ms.
         // 6. Send Enter to select and open the conversation.
         const vbsContent = [
           'Set WshShell = CreateObject("WScript.Shell")',
-          'WScript.Sleep 500',
+          'WScript.Sleep 400',
           'WshShell.SendKeys "^a"',
           'WScript.Sleep 50',
           'WshShell.SendKeys "^v"',
           'WScript.Sleep 50',
           'WshShell.SendKeys "+{INSERT}"',
-          'WScript.Sleep 900',
+          'WScript.Sleep 600',
           'WshShell.SendKeys "{DOWN}"',
-          'WScript.Sleep 500',
+          'WScript.Sleep 400',
           'WshShell.SendKeys "{ENTER}"',
           'WScript.Sleep 200',
           'WshShell.SendKeys "{ENTER}"',
@@ -596,7 +596,7 @@ export class ConversationService {
     } else if (process.platform === 'darwin') {
       try {
         const script =
-          'delay 0.5\ntell application "System Events" to keystroke "v" using command down\ndelay 0.9\ntell application "System Events" to key code 125\ndelay 0.5\ntell application "System Events" to key code 36\ndelay 0.2\ntell application "System Events" to key code 36';
+          'delay 0.4\ntell application "System Events" to keystroke "v" using command down\ndelay 0.6\ntell application "System Events" to key code 125\ndelay 0.4\ntell application "System Events" to key code 36\ndelay 0.2\ntell application "System Events" to key code 36';
         child_process.exec(`osascript -e '${script}'`);
       } catch {
         // ignore
@@ -604,7 +604,7 @@ export class ConversationService {
     } else {
       try {
         child_process.exec(
-          'sleep 0.5 && xdotool key ctrl+v && sleep 0.9 && xdotool key Down && sleep 0.5 && xdotool key Return && sleep 0.2 && xdotool key Return'
+          'sleep 0.4 && xdotool key ctrl+v && sleep 0.6 && xdotool key Down && sleep 0.4 && xdotool key Return && sleep 0.2 && xdotool key Return'
         );
       } catch {
         // ignore
@@ -656,13 +656,13 @@ export class ConversationService {
             // ignore
           }
 
-          // Copy search query to clipboard
+          // Copy search query to clipboard (preserves Persian نیم‌فاصله \u200c)
           const searchQuery = cleanTitle
             .replace(/\.{3,}$/, '')
-            .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-            .replace(/\s+/g, ' ')
+            .replace(/[^\p{L}\p{N}\s\u200c\u200d]/gu, ' ')
+            .replace(/[ \t]+/g, ' ')
             .trim()
-            .slice(0, 35);
+            .slice(0, 40);
           if (searchQuery) {
             await vscode.env.clipboard.writeText(searchQuery);
           }
@@ -680,13 +680,13 @@ export class ConversationService {
       }
     }
 
-    // 2. Prepare clean search query (remove dots, ellipsis, special chars, max 35 chars for ideal QuickPick fuzzy match)
+    // 2. Prepare clean search query (preserves Persian نیم‌فاصله \u200c, removes dots, ellipsis, special chars, max 40 chars for ideal QuickPick match)
     const searchQuery = cleanTitle
       .replace(/\.{3,}$/, '')
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .replace(/\s+/g, ' ')
+      .replace(/[^\p{L}\p{N}\s\u200c\u200d]/gu, ' ')
+      .replace(/[ \t]+/g, ' ')
       .trim()
-      .slice(0, 35);
+      .slice(0, 40);
 
     // 3. Copy search query to clipboard
     if (searchQuery) {
