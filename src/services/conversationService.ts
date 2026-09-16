@@ -311,6 +311,48 @@ export class ConversationService {
   }
 
   /**
+   * Sanitizes any raw title, prompt, or plan header into a clean, concise, human-readable title.
+   * Eliminates markdown tokens, XML tags, multiple lines, and truncates neatly at word boundaries.
+   */
+  private sanitizeTitle(raw: string, maxLength = 52): string {
+    if (!raw) return '';
+    let cleaned = raw
+      .replace(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i, '$1')
+      .replace(/<[A-Z_]+>[\s\S]*?<\/[A-Z_]+>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/^#+\s*/g, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    cleaned = cleaned
+      .replace(/^(?:task|original_task|implementation plan|goal|plan)[:\-–—\s]+/i, '')
+      .trim();
+
+    if (!cleaned) return '';
+
+    const sentenceEnd = cleaned.search(/[.?!؟]\s/);
+    if (sentenceEnd > 15 && sentenceEnd < maxLength) {
+      cleaned = cleaned.slice(0, sentenceEnd).trim();
+    }
+
+    if (cleaned.length > maxLength) {
+      const truncated = cleaned.slice(0, maxLength);
+      const lastSpace = truncated.lastIndexOf(' ');
+      if (lastSpace > 20) {
+        cleaned = truncated.slice(0, lastSpace).trim() + '...';
+      } else {
+        cleaned = truncated.trim() + '...';
+      }
+    }
+
+    return cleaned;
+  }
+
+  /**
    * Scans and returns all discovered conversations sorted by latest activity.
    * Internal subagents, background workers, and robotic prompts are filtered out.
    */
@@ -330,15 +372,30 @@ export class ConversationService {
       if (!t) return false;
       const lower = t.trim().toLowerCase();
       return (
-        lower.startsWith('you are ') ||
-        lower.startsWith('you are the ') ||
-        lower.includes('teamwork_preview_') ||
+        lower.startsWith('you are') ||
+        lower.startsWith('use a very large team') ||
+        lower.startsWith('use a team') ||
+        lower.includes('team of ') ||
+        lower.includes('teamwork_preview') ||
         lower.includes('project orchestrator') ||
+        lower.includes('orchestrator') ||
+        lower.includes('explorer_') ||
+        lower.includes('reviewer_') ||
+        lower.includes('auditor_') ||
+        lower.includes('challenger_') ||
+        lower.includes('worker_') ||
+        lower.includes('spec_miner') ||
         lower.includes('explorer survey') ||
         lower.includes('victory auditor') ||
         lower.includes('acceptance gate') ||
         lower.includes('regression verification') ||
         lower.includes('working directory:') ||
+        lower.includes('<original_task>') ||
+        lower.includes('stop all agents') ||
+        lower.includes('stop alla gents') ||
+        lower.includes('independent code review') ||
+        lower.includes('forensic auditor') ||
+        lower.includes('adversarial stress') ||
         lower.includes('comprehensive extraction, nlp-driven')
       );
     };
@@ -512,11 +569,43 @@ export class ConversationService {
             // ignore file read error
           }
 
-          let finalTitle = previewText;
+          // 1. Check implementation_plan.md for clean human-readable goal
+          let planTitle = '';
+          const planFile = path.join(sessionDir, 'implementation_plan.md');
+          if (fs.existsSync(planFile)) {
+            try {
+              const firstLine = fs.readFileSync(planFile, 'utf8').split('\n')[0] || '';
+              if (firstLine.startsWith('#')) {
+                planTitle = this.sanitizeTitle(firstLine);
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          // 2. Trajectory summary from official IDE SQLite state
+          let trajTitle = '';
           const traj = this.trajectoryMap.get(convId);
           if (traj?.title) {
-            finalTitle = traj.title;
+            trajTitle = this.sanitizeTitle(traj.title);
           }
+
+          // 3. User prompt preview
+          const promptTitle = this.sanitizeTitle(previewText);
+
+          // Priority for title:
+          // If trajTitle is short and clean (not a multi-line raw question), use it.
+          // Otherwise, if planTitle is present, use planTitle.
+          // Otherwise trajTitle if present, then promptTitle.
+          let finalTitle = '';
+          if (trajTitle && trajTitle.length <= 48 && !trajTitle.includes('?') && !trajTitle.includes('؟')) {
+            finalTitle = trajTitle;
+          } else if (planTitle) {
+            finalTitle = planTitle;
+          } else {
+            finalTitle = trajTitle || promptTitle || `Session ${convId.slice(0, 8)}`;
+          }
+
           if (traj?.workspaceFullPath) {
             detectedWsPath = traj.workspaceFullPath;
             projectName = traj.workspace || path.basename(traj.workspaceFullPath);
@@ -532,7 +621,12 @@ export class ConversationService {
           }
 
           // Filter out subagents and background worker tasks
-          if (isSubagentText(finalTitle) || isSubagentText(previewText)) {
+          if (
+            isSubagentText(finalTitle) ||
+            isSubagentText(previewText) ||
+            isSubagentText(traj?.title || '') ||
+            isSubagentText(planTitle)
+          ) {
             continue;
           }
 
@@ -615,21 +709,24 @@ export class ConversationService {
       try {
         const tempVbs = path.join(os.tmpdir(), `ag_select_${Date.now()}.vbs`);
         // Deliberate step-by-step automation:
-        // 1. Wait 900ms for the native picker UI and search input to render and take focus.
+        // 1. Wait 1000ms for the native picker UI and search input to render and take focus.
         // 2. Send Ctrl+V to paste the conversation title into the search box.
         // 3. Wait 1800ms so the user can clearly observe the pasted title and filtered list.
         // 4. Send Down Arrow to highlight the top filtered conversation.
-        // 5. Wait 900ms to observe the item highlighted.
+        // 5. Wait 1000ms to observe the item highlighted.
         // 6. Send Enter to select and open the conversation.
+        // 7. Send Enter once more after 250ms as a reinforcing commit in case VS Code QuickPick held focus on input.
         const vbsContent = [
           'Set WshShell = CreateObject("WScript.Shell")',
-          'WScript.Sleep 900',
+          'WScript.Sleep 1000',
           'WshShell.SendKeys "^v"',
           'WScript.Sleep 1800',
           'WshShell.SendKeys "{DOWN}"',
-          'WScript.Sleep 1200',
+          'WScript.Sleep 1000',
           'WshShell.SendKeys "{ENTER}"',
-          'WScript.Sleep 800',
+          'WScript.Sleep 250',
+          'WshShell.SendKeys "{ENTER}"',
+          'WScript.Sleep 500',
         ].join('\r\n');
         fs.writeFileSync(tempVbs, vbsContent, 'utf8');
 
@@ -646,14 +743,14 @@ export class ConversationService {
           } catch {
             // ignore
           }
-        }, 10000);
+        }, 12000);
       } catch (err) {
         console.warn('[ConversationService] Windows SendKeys automation error:', err);
       }
     } else if (process.platform === 'darwin') {
       try {
         const script =
-          'delay 0.9\ntell application "System Events" to keystroke "v" using command down\ndelay 1.8\ntell application "System Events" to key code 125\ndelay 1.2\ntell application "System Events" to key code 36\ndelay 0.8';
+          'delay 1.0\ntell application "System Events" to keystroke "v" using command down\ndelay 1.8\ntell application "System Events" to key code 125\ndelay 1.0\ntell application "System Events" to key code 36\ndelay 0.25\ntell application "System Events" to key code 36';
         child_process.exec(`osascript -e '${script}'`);
       } catch {
         // ignore
@@ -661,7 +758,7 @@ export class ConversationService {
     } else {
       try {
         child_process.exec(
-          'sleep 0.9 && xdotool key ctrl+v && sleep 1.8 && xdotool key Down && sleep 1.2 && xdotool key Return && sleep 0.8'
+          'sleep 1.0 && xdotool key ctrl+v && sleep 1.8 && xdotool key Down && sleep 1.0 && xdotool key Return && sleep 0.25 && xdotool key Return'
         );
       } catch {
         // ignore
@@ -713,9 +810,15 @@ export class ConversationService {
             // ignore
           }
 
-          // Copy title to clipboard
-          if (cleanTitle) {
-            await vscode.env.clipboard.writeText(cleanTitle);
+          // Copy search query to clipboard
+          const searchQuery = cleanTitle
+            .replace(/\.{3,}$/, '')
+            .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 35);
+          if (searchQuery) {
+            await vscode.env.clipboard.writeText(searchQuery);
           }
 
           // Switch or open folder without forcing a duplicate blank window
@@ -731,24 +834,28 @@ export class ConversationService {
       }
     }
 
-    // 2. Copy verbatim title to clipboard (preserving Persian ZWNJ, full text, and symbols)
-    if (cleanTitle) {
-      await vscode.env.clipboard.writeText(cleanTitle);
+    // 2. Prepare clean search query (remove dots, ellipsis, special chars, max 35 chars for ideal QuickPick fuzzy match)
+    const searchQuery = cleanTitle
+      .replace(/\.{3,}$/, '')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 35);
+
+    // 3. Copy search query to clipboard
+    if (searchQuery) {
+      await vscode.env.clipboard.writeText(searchQuery);
     }
 
-    // 3. Open Antigravity's native Conversation Picker
-    try {
-      await vscode.commands.executeCommand('antigravity.openConversationPicker');
-    } catch {
-      try {
-        await vscode.commands.executeCommand('openConversationPicker');
-      } catch {
-        // ignore
-      }
-    }
+    // 4. Launch automation concurrently in background (DO NOT AWAIT!)
+    // vscode.commands.executeCommand on QuickPick blocks until the picker is closed,
+    // so automation MUST run concurrently in the background!
+    this.automatePasteAndSelect(searchQuery);
 
-    // 4. Automated execution: Paste -> wait -> Down Arrow -> wait -> Enter
-    this.automatePasteAndSelect(cleanTitle);
+    // 5. Open Antigravity's native Conversation Picker (DO NOT AWAIT!)
+    vscode.commands.executeCommand('antigravity.openConversationPicker').then(undefined, () => {
+      vscode.commands.executeCommand('openConversationPicker').then(undefined, () => {});
+    });
   }
 
   /**

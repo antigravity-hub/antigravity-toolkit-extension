@@ -348,15 +348,22 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             datePillClass = 'date-week';
           }
 
-          const safeTitle = s.title.replace(/['"\\`]/g, ' ').trim();
+          const cleanNodeTitle = s.title.replace(/[\r\n\t]+/g, ' ').trim();
+          const escapedTitle = cleanNodeTitle
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+
           return `
-          <div class="timeline-node" onclick="handleOpenChat(this, '${s.id}', '${safeTitle}')">
+          <div class="timeline-node" onclick="handleOpenChat(this, '${s.id}')">
             <div class="node-bullet">
               <span class="node-num">${sIdx + 1}</span>
             </div>
             <div class="node-content">
               <div class="node-header">
-                <span class="node-title" title="${s.title}">${s.title}</span>
+                <span class="node-title" title="${escapedTitle}">${escapedTitle}</span>
                 <span class="node-token-tag">${tokens}</span>
               </div>
               <div class="node-footer">
@@ -368,7 +375,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                   <button type="button" class="node-open-btn node-file-btn" onclick="event.stopPropagation(); openTranscriptOnly('${s.id}')" title="Open raw transcript file in editor" style="background: rgba(148, 163, 184, 0.1); border-color: rgba(148, 163, 184, 0.25); color: #cbd5e1;">
                     <span>📄 Log</span>
                   </button>
-                  <button type="button" class="node-open-btn" id="btn-open-${s.id}" onclick="event.stopPropagation(); handleOpenChat(this, '${s.id}', '${safeTitle}')" title="Open in Antigravity Chat panel">
+                  <button type="button" class="node-open-btn" id="btn-open-${s.id}" onclick="event.stopPropagation(); handleOpenChat(this, '${s.id}')" title="Open in Antigravity Chat panel">
                     <svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
                       <path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/>
                     </svg>
@@ -2281,10 +2288,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       vscode.postMessage({ command: 'triggerAutoRotate' });
     }
 
-    function handleOpenChat(el, sessionId, title) {
+    function handleOpenChat(el, sessionId) {
       if (!sessionId) return;
 
-      // Visually give clear, phased feedback on clicked button during the slowed automation
+      // Visually give clear, phased feedback on clicked button during the automation
       const targetBtn = document.getElementById('btn-open-' + sessionId);
       if (targetBtn) {
         targetBtn.classList.add('btn-opening');
@@ -2294,24 +2301,24 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           if (targetBtn.classList.contains('btn-opening')) {
             targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Pasting Title...';
           }
-        }, 1500);
+        }, 1000);
 
         setTimeout(() => {
           if (targetBtn.classList.contains('btn-opening')) {
             targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Selecting (↓)...';
           }
-        }, 3600);
+        }, 2800);
 
         setTimeout(() => {
           if (targetBtn.classList.contains('btn-opening')) {
             targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Entering (↵)...';
           }
-        }, 4800);
+        }, 3800);
 
         setTimeout(() => {
           targetBtn.classList.remove('btn-opening');
           targetBtn.innerHTML = '<svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/></svg> <span>Open in Chat</span>';
-        }, 6200);
+        }, 5200);
       }
 
       // Post message to backend extension
