@@ -10,7 +10,7 @@ export class ConversationService {
   private onDidChangeConversationsEmitter = new vscode.EventEmitter<void>();
   public readonly onDidChangeConversations = this.onDidChangeConversationsEmitter.event;
 
-  private trajectoryMap: Map<string, { title: string; workspace?: string; workspaceFullPath?: string }> = new Map();
+  private trajectoryMap: Map<string, { title: string; workspace?: string; workspaceFullPath?: string; updatedAt?: number }> = new Map();
   private lastTrajectoryLoad = 0;
   private cachedSessions: ConversationSession[] = [];
   private lastSessionsScan = 0;
@@ -269,10 +269,13 @@ export class ConversationService {
                 let title = '';
                 let workspace = '';
                 let workspaceFullPath = '';
+                let protoTime = 0;
 
                 for (const inf of innerFields) {
                   if (inf.fieldNum === 1 && inf.type === 'bytes') {
                     title = inf.val.toString('utf8');
+                  } else if (inf.fieldNum === 2 && inf.type === 'varint') {
+                    protoTime = inf.val;
                   } else if (inf.fieldNum === 9 && inf.type === 'bytes') {
                     const wFields = this.parseProto(inf.val);
                     for (const wf of wFields) {
@@ -292,7 +295,8 @@ export class ConversationService {
                 }
 
                 if (title && title.length > 1) {
-                  this.trajectoryMap.set(uuid, { title, workspace, workspaceFullPath });
+                  const updatedAt = protoTime > 100000000000 ? protoTime : protoTime > 0 ? protoTime * 1000 : undefined;
+                  this.trajectoryMap.set(uuid, { title, workspace, workspaceFullPath, updatedAt });
                 }
               } catch {
                 // ignore item parse error
@@ -400,8 +404,113 @@ export class ConversationService {
       );
     };
 
+    // 1. PRIMARY & AUTHORITATIVE SOURCE: Official Antigravity IDE Trajectories
+    // Loads exclusively the genuine conversations registered by the IDE itself!
+    for (const [convId, traj] of this.trajectoryMap.entries()) {
+      seenIds.add(convId);
+
+      // Locate transcript across brain directories
+      let transcriptPath = '';
+      let stepCount = 0;
+      let tokenEstimate = 0;
+      let mtime = traj.updatedAt || 0;
+      let previewText = '';
+
+      for (const bDir of brainDirs) {
+        const compact = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+        const full = path.join(bDir, convId, '.system_generated', 'logs', 'transcript_full.jsonl');
+        const tPath = fs.existsSync(compact) ? compact : fs.existsSync(full) ? full : '';
+        if (tPath) {
+          transcriptPath = tPath;
+          try {
+            const stat = fs.statSync(tPath);
+            mtime = Math.max(mtime, stat.mtimeMs);
+            const content = fs.readFileSync(tPath, 'utf8');
+            const lines = content.split('\n').filter((l) => l.trim().length > 0);
+            stepCount = lines.length;
+            tokenEstimate = Math.round(content.length / 3.8);
+
+            // Extract preview text from early user input
+            for (const line of lines.slice(0, 25)) {
+              try {
+                const obj = JSON.parse(line);
+                if (obj.type === 'USER_INPUT' && obj.content) {
+                  let raw = String(obj.content);
+                  const reqMatch = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+                  if (reqMatch && reqMatch[1]) raw = reqMatch[1];
+                  previewText = raw.replace(/<[^>]+>/g, '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 90);
+                  break;
+                }
+              } catch {}
+            }
+          } catch {}
+          break;
+        }
+      }
+
+      // Check implementation plan title for clean descriptive goals
+      let planTitle = '';
+      for (const bDir of brainDirs) {
+        const planFile = path.join(bDir, convId, 'implementation_plan.md');
+        if (fs.existsSync(planFile)) {
+          try {
+            const head = fs.readFileSync(planFile, 'utf8').split('\n')[0] || '';
+            if (head.startsWith('#')) planTitle = this.sanitizeTitle(head);
+          } catch {}
+          break;
+        }
+      }
+
+      // Sanitize title
+      let finalTitle = this.sanitizeTitle(traj.title);
+      if (finalTitle.includes('?') || finalTitle.includes('؟') || finalTitle.length > 48) {
+        if (planTitle) finalTitle = planTitle;
+      }
+      if (!finalTitle) {
+        finalTitle = planTitle || (previewText ? this.sanitizeTitle(previewText) : `Session ${convId.slice(0, 8)}`);
+      }
+
+      // Filter if somehow a subagent task was in trajectory
+      if (isSubagentText(finalTitle) || isSubagentText(traj.title) || isSubagentText(previewText)) {
+        continue;
+      }
+
+      let projectName = traj.workspace || 'General';
+      let workspacePath = traj.workspaceFullPath;
+      if (!workspacePath && traj.workspace && pathMap.has(traj.workspace.toLowerCase())) {
+        workspacePath = pathMap.get(traj.workspace.toLowerCase());
+      }
+      if (!workspacePath && projectName !== 'General' && pathMap.has(projectName.toLowerCase())) {
+        workspacePath = pathMap.get(projectName.toLowerCase());
+      }
+
+      const date = new Date(mtime || Date.now());
+      const dateFormatted = date.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+
+      sessions.push({
+        id: convId,
+        title: finalTitle,
+        createdAt: mtime || Date.now(),
+        updatedAt: mtime || Date.now(),
+        dateFormatted,
+        transcriptPath,
+        stepCount,
+        previewText,
+        projectName,
+        workspacePath,
+        tokenEstimate: tokenEstimate || stepCount * 1400,
+      });
+    }
+
+    // 2. RECENT SESSIONS FALLBACK (Only for chats created in the last 60 minutes not yet flushed to SQLite)
     for (const brainDir of brainDirs) {
       try {
+        if (!fs.existsSync(brainDir)) continue;
         const entries = fs.readdirSync(brainDir, { withFileTypes: true });
         for (const entry of entries) {
           if (!entry.isDirectory()) continue;
@@ -411,233 +520,71 @@ export class ConversationService {
           const convId = entry.name;
           const sessionDir = path.join(brainDir, convId);
           const logsDir = path.join(sessionDir, '.system_generated', 'logs');
-          const transcriptCompact = path.join(logsDir, 'transcript.jsonl');
-          const transcriptFull = path.join(logsDir, 'transcript_full.jsonl');
+          const compact = path.join(logsDir, 'transcript.jsonl');
+          const full = path.join(logsDir, 'transcript_full.jsonl');
+          const tPath = fs.existsSync(compact) ? compact : fs.existsSync(full) ? full : '';
+          if (!tPath) continue;
 
-          const transcriptPath = fs.existsSync(transcriptCompact)
-            ? transcriptCompact
-            : fs.existsSync(transcriptFull)
-            ? transcriptFull
-            : '';
-
-          // Only treat as real session if transcript exists
-          if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+          let stat: fs.Stats;
+          try {
+            stat = fs.statSync(tPath);
+          } catch {
             continue;
           }
 
-          let stepCount = 0;
+          if (now - stat.mtimeMs > 60 * 60 * 1000) {
+            continue;
+          }
+
+          let content = '';
+          try {
+            content = fs.readFileSync(tPath, 'utf8');
+          } catch {
+            continue;
+          }
+          const lines = content.split('\n').filter((l) => l.trim().length > 0);
+          if (lines.length === 0) continue;
+
           let previewText = '';
-          let mtime = 0;
-
-          try {
-            const stat = fs.statSync(transcriptPath);
-            mtime = stat.mtimeMs;
-          } catch {
-            mtime = Date.now();
+          for (const line of lines.slice(0, 25)) {
+            try {
+              const obj = JSON.parse(line);
+              if (obj.type === 'USER_INPUT' && obj.content) {
+                let raw = String(obj.content);
+                const reqMatch = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+                if (reqMatch && reqMatch[1]) raw = reqMatch[1];
+                previewText = raw.replace(/<[^>]+>/g, '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 90);
+                break;
+              }
+            } catch {}
           }
 
-          let projectName = '';
-          let detectedWsPath = '';
-          let tokenEstimate = 0;
-          let sampleContent = '';
+          if (isSubagentText(previewText)) continue;
 
-          try {
-            const content = fs.readFileSync(transcriptPath, 'utf8');
-            const lines = content.split('\n').filter((l) => l.trim().length > 0);
-            stepCount = lines.length;
-            tokenEstimate = Math.round(content.length / 3.8);
-
-            // 1. Accurate project detection from <user_information> block in early lines
-            for (const line of lines.slice(0, 25)) {
-              // Match [URI] -> [CorpusName] format
-              const uriMatch =
-                line.match(/(?:active workspaces[^\n]*\n|\bformat\s+\[URI\]\s*->\s*\[CorpusName\]:\s*|\b)([a-zA-Z]:[^\r\n"'>\\]+(?:\\|\/)[^\r\n"'>\\]+)\s*->/i) ||
-                line.match(/The user has \d+ active workspaces.*?([a-zA-Z]:[^\r\n"'>]+?)\s*->/i);
-              if (uriMatch && uriMatch[1]) {
-                const cand = uriMatch[1].trim();
-                const norm = path.normalize(cand);
-                if (fs.existsSync(norm)) {
-                  detectedWsPath = norm;
-                  projectName = path.basename(norm);
-                  if (!pathMap.has(projectName.toLowerCase())) {
-                    pathMap.set(projectName.toLowerCase(), norm);
-                  }
-                  break;
-                }
-              }
-
-              // Check working directory: <path>
-              const wdMatch = line.match(/working directory:\s*([a-zA-Z]:[^\r\n"']+)/i);
-              if (wdMatch && wdMatch[1]) {
-                const cand = wdMatch[1].trim();
-                const norm = path.normalize(cand);
-                for (const [kwLower, kwPath] of pathMap.entries()) {
-                  if (norm.toLowerCase().startsWith(kwPath.toLowerCase())) {
-                    detectedWsPath = kwPath;
-                    projectName = path.basename(kwPath);
-                    break;
-                  }
-                }
-                if (detectedWsPath) break;
-              }
-            }
-
-            // 2. Inspect early tool call arguments & extract clean previewText
-            for (const line of lines.slice(0, 40)) {
-              try {
-                const obj = JSON.parse(line);
-
-                // Tool calls inspection for workspace path
-                if (!detectedWsPath && obj.tool_calls && Array.isArray(obj.tool_calls)) {
-                  for (const tc of obj.tool_calls) {
-                    const args = tc.args || {};
-                    const cand =
-                      args.SearchDirectory ||
-                      args.Cwd ||
-                      args.DirectoryPath ||
-                      args.TargetFile ||
-                      args.AbsolutePath ||
-                      args.SearchPath ||
-                      '';
-                    if (cand && typeof cand === 'string') {
-                      let cleanCand = cand.replace(/^"+|"+$/g, '').trim();
-                      if (cleanCand.length > 3) {
-                        const norm = path.normalize(cleanCand);
-                        for (const [kwLower, kwPath] of pathMap.entries()) {
-                          if (norm.toLowerCase().startsWith(kwPath.toLowerCase())) {
-                            detectedWsPath = kwPath;
-                            projectName = path.basename(kwPath);
-                            break;
-                          }
-                        }
-                        if (!detectedWsPath && fs.existsSync(norm)) {
-                          const stat = fs.statSync(norm);
-                          const dir = stat.isDirectory() ? norm : path.dirname(norm);
-                          detectedWsPath = dir;
-                          projectName = path.basename(dir);
-                          if (!pathMap.has(projectName.toLowerCase())) {
-                            pathMap.set(projectName.toLowerCase(), dir);
-                          }
-                          break;
-                        }
-                      }
-                    }
-                  }
-                }
-
-                // Extract first clean user input as previewText
-                if (obj.type === 'USER_INPUT' && obj.content && !previewText) {
-                  let rawText = String(obj.content);
-                  const userReqMatch = rawText.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
-                  if (userReqMatch && userReqMatch[1]) {
-                    rawText = userReqMatch[1];
-                  } else {
-                    rawText = rawText.replace(/<[A-Z_]+>[\s\S]*?<\/[A-Z_]+>/gi, '');
-                  }
-                  const cleaned = rawText
-                    .replace(/<[^>]+>/g, '')
-                    .replace(/\r?\n+/g, ' ')
-                    .trim();
-                  if (cleaned.length > 0) {
-                    previewText = cleaned.slice(0, 110);
-                  }
-                }
-              } catch {
-                // ignore
-              }
-            }
-
-            // 3. Fallback: check file URI patterns in early lines
-            if (!detectedWsPath) {
-              for (const line of lines.slice(0, 30)) {
-                const fileMatch = line.match(/file:\/\/\/([a-zA-Z]:\/[^\s"'>\\]+)/i);
-                if (fileMatch) {
-                  const cleanUri = decodeURIComponent(fileMatch[1]).replace(/\//g, path.sep);
-                  const normUri = path.normalize(cleanUri);
-                  for (const [kwLower, kwPath] of pathMap.entries()) {
-                    if (normUri.toLowerCase().startsWith(kwPath.toLowerCase())) {
-                      detectedWsPath = kwPath;
-                      projectName = path.basename(kwPath);
-                      break;
-                    }
-                  }
-                  if (detectedWsPath) break;
-                }
-              }
-            }
-          } catch {
-            // ignore file read error
-          }
-
-          // 1. Check implementation_plan.md for clean human-readable goal
           let planTitle = '';
           const planFile = path.join(sessionDir, 'implementation_plan.md');
           if (fs.existsSync(planFile)) {
             try {
-              const firstLine = fs.readFileSync(planFile, 'utf8').split('\n')[0] || '';
-              if (firstLine.startsWith('#')) {
-                planTitle = this.sanitizeTitle(firstLine);
-              }
-            } catch {
-              // ignore
-            }
+              const head = fs.readFileSync(planFile, 'utf8').split('\n')[0] || '';
+              if (head.startsWith('#')) planTitle = this.sanitizeTitle(head);
+            } catch {}
           }
 
-          // 2. Trajectory summary from official IDE SQLite state
-          let trajTitle = '';
-          const traj = this.trajectoryMap.get(convId);
-          if (traj?.title) {
-            trajTitle = this.sanitizeTitle(traj.title);
-          }
-
-          // 3. User prompt preview
-          const promptTitle = this.sanitizeTitle(previewText);
-
-          // Priority for title:
-          // If trajTitle is short and clean (not a multi-line raw question), use it.
-          // Otherwise, if planTitle is present, use planTitle.
-          // Otherwise trajTitle if present, then promptTitle.
-          let finalTitle = '';
-          if (trajTitle && trajTitle.length <= 48 && !trajTitle.includes('?') && !trajTitle.includes('؟')) {
-            finalTitle = trajTitle;
-          } else if (planTitle) {
-            finalTitle = planTitle;
-          } else {
-            finalTitle = trajTitle || promptTitle || `Session ${convId.slice(0, 8)}`;
-          }
-
-          if (traj?.workspaceFullPath) {
-            detectedWsPath = traj.workspaceFullPath;
-            projectName = traj.workspace || path.basename(traj.workspaceFullPath);
-          } else if (traj?.workspace) {
-            projectName = traj.workspace;
-            if (!detectedWsPath && pathMap.has(traj.workspace.toLowerCase())) {
-              detectedWsPath = pathMap.get(traj.workspace.toLowerCase())!;
-            }
-          }
-
-          if (stepCount === 0 && !finalTitle) {
-            continue;
-          }
-
-          // Filter out subagents and background worker tasks
-          if (
-            isSubagentText(finalTitle) ||
-            isSubagentText(previewText) ||
-            isSubagentText(traj?.title || '') ||
-            isSubagentText(planTitle)
-          ) {
-            continue;
-          }
+          const finalTitle = planTitle || (previewText ? this.sanitizeTitle(previewText) : `Session ${convId.slice(0, 8)}`);
+          if (isSubagentText(finalTitle)) continue;
 
           seenIds.add(convId);
+          const stepCount = lines.length;
+          const tokenEstimate = Math.round(content.length / 3.8);
 
-          let workspacePath: string | undefined = detectedWsPath;
-          if (!workspacePath && projectName) {
-            workspacePath = pathMap.get(projectName.toLowerCase());
+          let projectName = 'General';
+          let workspacePath: string | undefined;
+          if (vscode.workspace.workspaceFolders?.[0]) {
+            workspacePath = vscode.workspace.workspaceFolders[0].uri.fsPath;
+            projectName = vscode.workspace.name || path.basename(workspacePath);
           }
 
-          const date = new Date(mtime);
+          const date = new Date(stat.mtimeMs);
           const dateFormatted = date.toLocaleDateString(undefined, {
             month: 'short',
             day: 'numeric',
@@ -647,21 +594,19 @@ export class ConversationService {
 
           sessions.push({
             id: convId,
-            title: finalTitle || `Session ${convId.slice(0, 8)}`,
-            createdAt: mtime,
-            updatedAt: mtime,
+            title: finalTitle,
+            createdAt: stat.mtimeMs,
+            updatedAt: stat.mtimeMs,
             dateFormatted,
-            transcriptPath,
+            transcriptPath: tPath,
             stepCount,
             previewText,
-            projectName: projectName || 'General',
+            projectName,
             workspacePath,
-            tokenEstimate: tokenEstimate || stepCount * 1400,
+            tokenEstimate,
           });
         }
-      } catch (err) {
-        console.warn(`[ConversationService] Failed to read ${brainDir}:`, err);
-      }
+      } catch {}
     }
 
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
