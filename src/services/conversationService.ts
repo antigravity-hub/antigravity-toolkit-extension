@@ -608,17 +608,22 @@ export class ConversationService {
 
   /**
    * Automates pasting the conversation title and pressing Enter in the native picker.
-   * Zero manual intervention, lightweight, non-intrusive SendKeys automation.
+   * Delays are deliberately slowed down to allow the user to observe each step clearly.
    */
   public automatePasteAndSelect(title: string): void {
     if (process.platform === 'win32') {
       try {
         const tempVbs = path.join(os.tmpdir(), `ag_paste_${Date.now()}.vbs`);
+        // Deliberately slowed down timing:
+        // 1. Wait 1200ms for the native picker UI and search input to render and focus.
+        // 2. Send Ctrl+V to paste the conversation title.
+        // 3. Wait 1500ms so the user can visually verify the pasted query and filtered list.
+        // 4. Send Enter to select the top filtered conversation.
         const vbsContent = [
           'Set WshShell = CreateObject("WScript.Shell")',
-          'WScript.Sleep 160',
+          'WScript.Sleep 1200',
           'WshShell.SendKeys "^v"',
-          'WScript.Sleep 200',
+          'WScript.Sleep 1500',
           'WshShell.SendKeys "{ENTER}"',
         ].join('\r\n');
         fs.writeFileSync(tempVbs, vbsContent, 'utf8');
@@ -636,21 +641,21 @@ export class ConversationService {
           } catch {
             // ignore
           }
-        }, 4000);
+        }, 8000);
       } catch (err) {
         console.warn('[ConversationService] Windows SendKeys automation error:', err);
       }
     } else if (process.platform === 'darwin') {
       try {
         const script =
-          'tell application "System Events" to keystroke "v" using command down\ndelay 0.2\ntell application "System Events" to key code 36';
+          'delay 1.2\ntell application "System Events" to keystroke "v" using command down\ndelay 1.5\ntell application "System Events" to key code 36';
         child_process.exec(`osascript -e '${script}'`);
       } catch {
         // ignore
       }
     } else {
       try {
-        child_process.exec('xdotool key ctrl+v Return');
+        child_process.exec('sleep 1.2 && xdotool key ctrl+v && sleep 1.5 && xdotool key Return');
       } catch {
         // ignore
       }
@@ -731,6 +736,9 @@ export class ConversationService {
       }
     }
 
+    // Deliberate pause: let Chat panel render and settle
+    await new Promise((r) => setTimeout(r, 600));
+
     // 3. Copy verbatim title to clipboard (preserving Persian ZWNJ, full text, and symbols)
     if (cleanTitle) {
       await vscode.env.clipboard.writeText(cleanTitle);
@@ -751,7 +759,7 @@ export class ConversationService {
       }
     }
 
-    // 5. Automated paste and select (100% automated, no manual prompt)
+    // 5. Automated paste and select with slowed down timing (1200ms sleep -> ^v -> 1500ms sleep -> {ENTER})
     this.automatePasteAndSelect(cleanTitle);
   }
 
