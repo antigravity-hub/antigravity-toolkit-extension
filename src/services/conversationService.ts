@@ -10,7 +10,7 @@ export class ConversationService {
   private onDidChangeConversationsEmitter = new vscode.EventEmitter<void>();
   public readonly onDidChangeConversations = this.onDidChangeConversationsEmitter.event;
 
-  private trajectoryMap: Map<string, { title: string; workspace?: string }> = new Map();
+  private trajectoryMap: Map<string, { title: string; workspace?: string; workspaceFullPath?: string }> = new Map();
   private lastTrajectoryLoad = 0;
   private cachedSessions: ConversationSession[] = [];
   private lastSessionsScan = 0;
@@ -37,21 +37,27 @@ export class ConversationService {
   private getBrainDirectories(): string[] {
     const homeDir = os.homedir();
     const dirs: string[] = [
-      path.join(homeDir, '.gemini', 'antigravity', 'brain'),
       path.join(homeDir, '.gemini', 'antigravity-ide', 'brain'),
+      path.join(homeDir, '.gemini', 'antigravity', 'brain'),
       path.join(homeDir, '.gemini', 'brain'),
     ];
 
     // Check workspace root folders
     if (vscode.workspace.workspaceFolders) {
       for (const folder of vscode.workspace.workspaceFolders) {
-        dirs.push(path.join(folder.uri.fsPath, '.gemini', 'brain'));
-        dirs.push(path.join(folder.uri.fsPath, '.gemini', 'antigravity', 'brain'));
         dirs.push(path.join(folder.uri.fsPath, '.gemini', 'antigravity-ide', 'brain'));
+        dirs.push(path.join(folder.uri.fsPath, '.gemini', 'antigravity', 'brain'));
+        dirs.push(path.join(folder.uri.fsPath, '.gemini', 'brain'));
       }
     }
 
-    return dirs.filter((d) => fs.existsSync(d));
+    const seen = new Set<string>();
+    return dirs.filter((d) => {
+      const norm = path.normalize(d).toLowerCase();
+      if (seen.has(norm)) return false;
+      seen.add(norm);
+      return fs.existsSync(d);
+    });
   }
 
   /**
@@ -157,6 +163,62 @@ export class ConversationService {
    * Loads official conversation titles and workspaces from state.vscdb
    * (antigravityUnifiedStateSync.trajectorySummaries) with zero lag.
    */
+  /**
+   * Helper to decode Protobuf varint from Buffer
+   */
+  private parseVarint(data: Buffer, offset: number): [number, number] {
+    let res = 0;
+    let shift = 0;
+    while (offset < data.length) {
+      const b = data[offset++];
+      res |= (b & 0x7f) << shift;
+      shift += 7;
+      if ((b & 0x80) === 0) break;
+    }
+    return [res, offset];
+  }
+
+  /**
+   * Helper to decode generic Protobuf fields
+   */
+  private parseProto(data: Buffer): Array<{ fieldNum: number; type: string; val: any }> {
+    let offset = 0;
+    const fields: Array<{ fieldNum: number; type: string; val: any }> = [];
+    while (offset < data.length) {
+      const [tag, newOffset] = this.parseVarint(data, offset);
+      if (newOffset === offset) break;
+      offset = newOffset;
+      const wireType = tag & 7;
+      const fieldNum = tag >> 3;
+      if (wireType === 0) {
+        let val: number;
+        [val, offset] = this.parseVarint(data, offset);
+        fields.push({ fieldNum, type: 'varint', val });
+      } else if (wireType === 2) {
+        let len: number;
+        [len, offset] = this.parseVarint(data, offset);
+        const val = data.slice(offset, offset + len);
+        offset += len;
+        fields.push({ fieldNum, type: 'bytes', val });
+      } else if (wireType === 1) {
+        const val = data.slice(offset, offset + 8);
+        offset += 8;
+        fields.push({ fieldNum, type: '64bit', val });
+      } else if (wireType === 5) {
+        const val = data.slice(offset, offset + 4);
+        offset += 4;
+        fields.push({ fieldNum, type: '32bit', val });
+      } else {
+        break;
+      }
+    }
+    return fields;
+  }
+
+  /**
+   * Loads official conversation titles and workspaces from state.vscdb
+   * (antigravityUnifiedStateSync.trajectorySummaries) with zero lag via pure Protobuf parser.
+   */
   private loadTrajectorySummaries(): void {
     const now = Date.now();
     if (this.trajectoryMap.size > 0 && now - this.lastTrajectoryLoad < 30000) {
@@ -175,7 +237,7 @@ export class ConversationService {
       const val = child_process
         .execSync(
           `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';"`,
-          { maxBuffer: 25 * 1024 * 1024, timeout: 5000, windowsHide: true }
+          { maxBuffer: 30 * 1024 * 1024, timeout: 6000, windowsHide: true }
         )
         .toString()
         .trim();
@@ -183,44 +245,55 @@ export class ConversationService {
       if (!val) return;
 
       const buf = Buffer.from(val, 'base64');
-      const text = buf.toString('latin1');
-      const regex = /\$([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g;
-      let match: RegExpExecArray | null;
+      const topFields = this.parseProto(buf);
 
-      while ((match = regex.exec(text)) !== null) {
-        const uuid = match[1];
-        const offset = match.index;
-        const windowStart = Math.max(0, offset - 500);
-        const windowEnd = Math.min(text.length, offset + 1500);
-        const chunk = text.slice(windowStart, windowEnd);
+      for (const f of topFields) {
+        if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
+        const sub = this.parseProto(f.val);
+        let uuid = '';
+        let b64Payload: Buffer | null = null;
+        for (const s of sub) {
+          if (s.fieldNum === 1 && s.type === 'bytes') {
+            uuid = s.val.toString('utf8');
+          } else if (s.fieldNum === 2 && s.type === 'bytes') {
+            b64Payload = s.val;
+          }
+        }
 
-        const b64Regex = /([A-Za-z0-9+/=]{40,})/g;
-        let b64Match: RegExpExecArray | null;
-        while ((b64Match = b64Regex.exec(chunk)) !== null) {
+        if (uuid && b64Payload) {
           try {
-            const decoded = Buffer.from(b64Match[1], 'base64');
-            if (decoded[0] === 0x0a) {
-              let len = decoded[1];
-              let titleStart = 2;
-              if (len & 0x80) {
-                len = (len & 0x7f) | (decoded[2] << 7);
-                titleStart = 3;
-              }
-              const title = decoded.slice(titleStart, titleStart + len).toString('utf8');
-              if (title.length > 2 && !this.trajectoryMap.has(uuid)) {
-                const decodedStr = decoded.toString('utf8');
-                const fileMatch = decodedStr.match(/file:\/\/\/([^\s\x00-\x1f"']+)/);
-                let workspace: string | undefined;
-                if (fileMatch) {
-                  const rawPath = decodeURIComponent(fileMatch[0]);
-                  const clean = rawPath.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
-                  workspace = path.basename(path.normalize(clean));
+            const innerBuf = Buffer.from(b64Payload.toString('utf8'), 'base64');
+            const innerFields = this.parseProto(innerBuf);
+            let title = '';
+            let workspace = '';
+            let workspaceFullPath = '';
+
+            for (const inf of innerFields) {
+              if (inf.fieldNum === 1 && inf.type === 'bytes') {
+                title = inf.val.toString('utf8');
+              } else if (inf.fieldNum === 9 && inf.type === 'bytes') {
+                const wFields = this.parseProto(inf.val);
+                for (const wf of wFields) {
+                  if (wf.type === 'bytes') {
+                    const str = wf.val.toString('utf8');
+                    const match = str.match(/file:\/\/\/([^\s\x00-\x1f"']+)/);
+                    if (match) {
+                      const raw = decodeURIComponent(match[0]);
+                      const clean = raw.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
+                      const norm = path.normalize(clean);
+                      workspaceFullPath = norm;
+                      workspace = path.basename(norm);
+                    }
+                  }
                 }
-                this.trajectoryMap.set(uuid, { title, workspace });
               }
             }
+
+            if (title && title.length > 1) {
+              this.trajectoryMap.set(uuid, { title, workspace, workspaceFullPath });
+            }
           } catch {
-            // ignore
+            // ignore item parse error
           }
         }
       }
@@ -251,10 +324,15 @@ export class ConversationService {
       const lower = t.trim().toLowerCase();
       return (
         lower.startsWith('you are ') ||
-        lower.startsWith('comprehensive extraction, nlp-driven') ||
-        lower.includes('teamwork_preview_victory_auditor') ||
-        lower.includes('acceptance gate, regression verification') ||
-        lower.includes('working directory:')
+        lower.startsWith('you are the ') ||
+        lower.includes('teamwork_preview_') ||
+        lower.includes('project orchestrator') ||
+        lower.includes('explorer survey') ||
+        lower.includes('victory auditor') ||
+        lower.includes('acceptance gate') ||
+        lower.includes('regression verification') ||
+        lower.includes('working directory:') ||
+        lower.includes('comprehensive extraction, nlp-driven')
       );
     };
 
@@ -340,63 +418,68 @@ export class ConversationService {
               }
             }
 
-            // 2. Inspect early tool call arguments (SearchDirectory, Cwd, DirectoryPath, TargetFile, AbsolutePath)
-            if (!detectedWsPath) {
-              for (const line of lines.slice(0, 40)) {
-                try {
-                  const obj = JSON.parse(line);
-                  if (obj.tool_calls && Array.isArray(obj.tool_calls)) {
-                    for (const tc of obj.tool_calls) {
-                      const args = tc.args || {};
-                      const cand =
-                        args.SearchDirectory ||
-                        args.Cwd ||
-                        args.DirectoryPath ||
-                        args.TargetFile ||
-                        args.AbsolutePath ||
-                        args.SearchPath ||
-                        '';
-                      if (cand && typeof cand === 'string') {
-                        let cleanCand = cand.replace(/^"+|"+$/g, '').trim();
-                        if (cleanCand.length > 3) {
-                          const norm = path.normalize(cleanCand);
-                          for (const [kwLower, kwPath] of pathMap.entries()) {
-                            if (norm.toLowerCase().startsWith(kwPath.toLowerCase())) {
-                              detectedWsPath = kwPath;
-                              projectName = path.basename(kwPath);
-                              break;
-                            }
-                          }
-                          if (!detectedWsPath && fs.existsSync(norm)) {
-                            const stat = fs.statSync(norm);
-                            const dir = stat.isDirectory() ? norm : path.dirname(norm);
-                            detectedWsPath = dir;
-                            projectName = path.basename(dir);
-                            if (!pathMap.has(projectName.toLowerCase())) {
-                              pathMap.set(projectName.toLowerCase(), dir);
-                            }
+            // 2. Inspect early tool call arguments & extract clean previewText
+            for (const line of lines.slice(0, 40)) {
+              try {
+                const obj = JSON.parse(line);
+
+                // Tool calls inspection for workspace path
+                if (!detectedWsPath && obj.tool_calls && Array.isArray(obj.tool_calls)) {
+                  for (const tc of obj.tool_calls) {
+                    const args = tc.args || {};
+                    const cand =
+                      args.SearchDirectory ||
+                      args.Cwd ||
+                      args.DirectoryPath ||
+                      args.TargetFile ||
+                      args.AbsolutePath ||
+                      args.SearchPath ||
+                      '';
+                    if (cand && typeof cand === 'string') {
+                      let cleanCand = cand.replace(/^"+|"+$/g, '').trim();
+                      if (cleanCand.length > 3) {
+                        const norm = path.normalize(cleanCand);
+                        for (const [kwLower, kwPath] of pathMap.entries()) {
+                          if (norm.toLowerCase().startsWith(kwPath.toLowerCase())) {
+                            detectedWsPath = kwPath;
+                            projectName = path.basename(kwPath);
                             break;
                           }
+                        }
+                        if (!detectedWsPath && fs.existsSync(norm)) {
+                          const stat = fs.statSync(norm);
+                          const dir = stat.isDirectory() ? norm : path.dirname(norm);
+                          detectedWsPath = dir;
+                          projectName = path.basename(dir);
+                          if (!pathMap.has(projectName.toLowerCase())) {
+                            pathMap.set(projectName.toLowerCase(), dir);
+                          }
+                          break;
                         }
                       }
                     }
                   }
-                  if (detectedWsPath) break;
-
-                  // Extract first clean user input as preview
-                  if (obj.type === 'USER_INPUT' && obj.content && !previewText) {
-                    let cleaned = String(obj.content)
-                      .replace(/<USER_REQUEST>[\s\S]*?<\/USER_REQUEST>/g, (m) => m.replace(/<\/?USER_REQUEST>/g, ''))
-                      .replace(/<[^>]+>/g, '')
-                      .replace(/\r?\n+/g, ' ')
-                      .trim();
-                    if (cleaned.length > 0) {
-                      previewText = cleaned.slice(0, 90);
-                    }
-                  }
-                } catch {
-                  // ignore
                 }
+
+                // Extract first clean user input as previewText
+                if (obj.type === 'USER_INPUT' && obj.content && !previewText) {
+                  let rawText = String(obj.content);
+                  const userReqMatch = rawText.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+                  if (userReqMatch && userReqMatch[1]) {
+                    rawText = userReqMatch[1];
+                  } else {
+                    rawText = rawText.replace(/<[A-Z_]+>[\s\S]*?<\/[A-Z_]+>/gi, '');
+                  }
+                  const cleaned = rawText
+                    .replace(/<[^>]+>/g, '')
+                    .replace(/\r?\n+/g, ' ')
+                    .trim();
+                  if (cleaned.length > 0) {
+                    previewText = cleaned.slice(0, 110);
+                  }
+                }
+              } catch {
+                // ignore
               }
             }
 
@@ -427,7 +510,10 @@ export class ConversationService {
           if (traj?.title) {
             finalTitle = traj.title;
           }
-          if (traj?.workspace) {
+          if (traj?.workspaceFullPath) {
+            detectedWsPath = traj.workspaceFullPath;
+            projectName = traj.workspace || path.basename(traj.workspaceFullPath);
+          } else if (traj?.workspace) {
             projectName = traj.workspace;
             if (!detectedWsPath && pathMap.has(traj.workspace.toLowerCase())) {
               detectedWsPath = pathMap.get(traj.workspace.toLowerCase())!;

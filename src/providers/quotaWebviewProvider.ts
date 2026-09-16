@@ -1700,6 +1700,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       text-overflow: ellipsis;
       flex: 1 1 auto;
       min-width: 0;
+      direction: auto;
+      unicode-bidi: plaintext;
+      text-align: start;
     }
 
     .node-token-tag {
