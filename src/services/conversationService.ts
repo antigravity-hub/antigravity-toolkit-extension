@@ -76,10 +76,11 @@ export class ConversationService {
       }
     }
 
-    // 2. Discover from IDE workspaceStorage (Antigravity IDE, Cursor, Code)
+    // 2. Discover from IDE workspaceStorage (Antigravity, Antigravity IDE, Cursor, Code)
     const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
     if (appData) {
       const storageRoots = [
+        path.join(appData, 'Antigravity', 'User', 'workspaceStorage'),
         path.join(appData, 'Antigravity IDE', 'User', 'workspaceStorage'),
         path.join(appData, 'Cursor', 'User', 'workspaceStorage'),
         path.join(appData, 'Code', 'User', 'workspaceStorage'),
@@ -164,13 +165,17 @@ export class ConversationService {
 
     try {
       const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
-      const dbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
-      if (!fs.existsSync(dbPath)) return;
+      const possibleDbs = [
+        path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
+        path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
+      ];
+      const dbPath = possibleDbs.find((p) => fs.existsSync(p));
+      if (!dbPath) return;
 
       const val = child_process
         .execSync(
           `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';"`,
-          { maxBuffer: 25 * 1024 * 1024, timeout: 5000 }
+          { maxBuffer: 25 * 1024 * 1024, timeout: 5000, windowsHide: true }
         )
         .toString()
         .trim();
@@ -290,6 +295,7 @@ export class ConversationService {
           }
 
           let projectName = '';
+          let detectedWsPath = '';
           let tokenEstimate = 0;
           let sampleContent = '';
 
@@ -299,34 +305,117 @@ export class ConversationService {
             stepCount = lines.length;
             tokenEstimate = Math.round(content.length / 3.8);
 
-            // Accurate matching: match against real known workspaces in transcript content
-            sampleContent = content.slice(0, 120000);
-            const sampleLower = sampleContent.toLowerCase();
+            // 1. Accurate project detection from <user_information> block in early lines
+            for (const line of lines.slice(0, 25)) {
+              // Match [URI] -> [CorpusName] format
+              const uriMatch =
+                line.match(/(?:active workspaces[^\n]*\n|\bformat\s+\[URI\]\s*->\s*\[CorpusName\]:\s*|\b)([a-zA-Z]:[^\r\n"'>\\]+(?:\\|\/)[^\r\n"'>\\]+)\s*->/i) ||
+                line.match(/The user has \d+ active workspaces.*?([a-zA-Z]:[^\r\n"'>]+?)\s*->/i);
+              if (uriMatch && uriMatch[1]) {
+                const cand = uriMatch[1].trim();
+                const norm = path.normalize(cand);
+                if (fs.existsSync(norm)) {
+                  detectedWsPath = norm;
+                  projectName = path.basename(norm);
+                  if (!pathMap.has(projectName.toLowerCase())) {
+                    pathMap.set(projectName.toLowerCase(), norm);
+                  }
+                  break;
+                }
+              }
 
-            for (const kw of knownWorkspaces) {
-              if (sampleLower.includes(kw.toLowerCase())) {
-                projectName = kw;
-                break;
+              // Check working directory: <path>
+              const wdMatch = line.match(/working directory:\s*([a-zA-Z]:[^\r\n"']+)/i);
+              if (wdMatch && wdMatch[1]) {
+                const cand = wdMatch[1].trim();
+                const norm = path.normalize(cand);
+                for (const [kwLower, kwPath] of pathMap.entries()) {
+                  if (norm.toLowerCase().startsWith(kwPath.toLowerCase())) {
+                    detectedWsPath = kwPath;
+                    projectName = path.basename(kwPath);
+                    break;
+                  }
+                }
+                if (detectedWsPath) break;
               }
             }
 
-            // Extract first clean user input as title / preview
-            for (const line of lines.slice(0, 40)) {
-              try {
-                const obj = JSON.parse(line);
-
-                if (obj.type === 'USER_INPUT' && obj.content && !previewText) {
-                  let cleaned = String(obj.content)
-                    .replace(/<USER_REQUEST>[\s\S]*?<\/USER_REQUEST>/g, (m) => m.replace(/<\/?USER_REQUEST>/g, ''))
-                    .replace(/<[^>]+>/g, '')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-                  if (cleaned.length > 0) {
-                    previewText = cleaned.slice(0, 90);
+            // 2. Inspect early tool call arguments (SearchDirectory, Cwd, DirectoryPath, TargetFile, AbsolutePath)
+            if (!detectedWsPath) {
+              for (const line of lines.slice(0, 40)) {
+                try {
+                  const obj = JSON.parse(line);
+                  if (obj.tool_calls && Array.isArray(obj.tool_calls)) {
+                    for (const tc of obj.tool_calls) {
+                      const args = tc.args || {};
+                      const cand =
+                        args.SearchDirectory ||
+                        args.Cwd ||
+                        args.DirectoryPath ||
+                        args.TargetFile ||
+                        args.AbsolutePath ||
+                        args.SearchPath ||
+                        '';
+                      if (cand && typeof cand === 'string') {
+                        let cleanCand = cand.replace(/^"+|"+$/g, '').trim();
+                        if (cleanCand.length > 3) {
+                          const norm = path.normalize(cleanCand);
+                          for (const [kwLower, kwPath] of pathMap.entries()) {
+                            if (norm.toLowerCase().startsWith(kwPath.toLowerCase())) {
+                              detectedWsPath = kwPath;
+                              projectName = path.basename(kwPath);
+                              break;
+                            }
+                          }
+                          if (!detectedWsPath && fs.existsSync(norm)) {
+                            const stat = fs.statSync(norm);
+                            const dir = stat.isDirectory() ? norm : path.dirname(norm);
+                            detectedWsPath = dir;
+                            projectName = path.basename(dir);
+                            if (!pathMap.has(projectName.toLowerCase())) {
+                              pathMap.set(projectName.toLowerCase(), dir);
+                            }
+                            break;
+                          }
+                        }
+                      }
+                    }
                   }
+                  if (detectedWsPath) break;
+
+                  // Extract first clean user input as preview
+                  if (obj.type === 'USER_INPUT' && obj.content && !previewText) {
+                    let cleaned = String(obj.content)
+                      .replace(/<USER_REQUEST>[\s\S]*?<\/USER_REQUEST>/g, (m) => m.replace(/<\/?USER_REQUEST>/g, ''))
+                      .replace(/<[^>]+>/g, '')
+                      .replace(/\r?\n+/g, ' ')
+                      .trim();
+                    if (cleaned.length > 0) {
+                      previewText = cleaned.slice(0, 90);
+                    }
+                  }
+                } catch {
+                  // ignore
                 }
-              } catch {
-                // ignore JSON parse errors on malformed lines
+              }
+            }
+
+            // 3. Fallback: check file URI patterns in early lines
+            if (!detectedWsPath) {
+              for (const line of lines.slice(0, 30)) {
+                const fileMatch = line.match(/file:\/\/\/([a-zA-Z]:\/[^\s"'>\\]+)/i);
+                if (fileMatch) {
+                  const cleanUri = decodeURIComponent(fileMatch[1]).replace(/\//g, path.sep);
+                  const normUri = path.normalize(cleanUri);
+                  for (const [kwLower, kwPath] of pathMap.entries()) {
+                    if (normUri.toLowerCase().startsWith(kwPath.toLowerCase())) {
+                      detectedWsPath = kwPath;
+                      projectName = path.basename(kwPath);
+                      break;
+                    }
+                  }
+                  if (detectedWsPath) break;
+                }
               }
             }
           } catch {
@@ -340,6 +429,9 @@ export class ConversationService {
           }
           if (traj?.workspace) {
             projectName = traj.workspace;
+            if (!detectedWsPath && pathMap.has(traj.workspace.toLowerCase())) {
+              detectedWsPath = pathMap.get(traj.workspace.toLowerCase())!;
+            }
           }
 
           if (stepCount === 0 && !finalTitle) {
@@ -353,25 +445,9 @@ export class ConversationService {
 
           seenIds.add(convId);
 
-          let workspacePath: string | undefined;
-          if (projectName) {
+          let workspacePath: string | undefined = detectedWsPath;
+          if (!workspacePath && projectName) {
             workspacePath = pathMap.get(projectName.toLowerCase());
-          }
-          if (!workspacePath && sampleContent) {
-            const fileMatch = sampleContent.match(/file:\/\/\/([a-zA-Z]:\/[^\s"'>\\]+)/i);
-            if (fileMatch) {
-              const cleanUri = decodeURIComponent(fileMatch[1]).replace(/\//g, path.sep);
-              for (const kw of knownWorkspaces) {
-                const idx = cleanUri.toLowerCase().indexOf(kw.toLowerCase());
-                if (idx !== -1) {
-                  workspacePath = cleanUri.slice(0, idx + kw.length);
-                  if (!projectName || projectName === 'General Workspace') {
-                    projectName = kw;
-                  }
-                  break;
-                }
-              }
-            }
           }
 
           const date = new Date(mtime);
@@ -391,7 +467,7 @@ export class ConversationService {
             transcriptPath,
             stepCount,
             previewText,
-            projectName: projectName || 'General Workspace',
+            projectName: projectName || 'General',
             workspacePath,
             tokenEstimate: tokenEstimate || stepCount * 1400,
           });
@@ -408,15 +484,98 @@ export class ConversationService {
   }
 
   /**
+   * Returns conversations strictly filtered to the currently active IDE workspace.
+   */
+  public async getActiveWorkspaceConversations(forceRefresh = false): Promise<ConversationSession[]> {
+    const all = await this.getConversations(forceRefresh);
+    const currentFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!currentFolder) {
+      return all;
+    }
+    const normCurrent = path.normalize(currentFolder).toLowerCase();
+    const currentName = (vscode.workspace.name || path.basename(currentFolder)).toLowerCase();
+
+    return all.filter((s) => {
+      if (s.workspacePath) {
+        const normWs = path.normalize(s.workspacePath).toLowerCase();
+        if (
+          normWs === normCurrent ||
+          normWs.startsWith(normCurrent + path.sep) ||
+          normCurrent.startsWith(normWs + path.sep)
+        ) {
+          return true;
+        }
+      }
+      if (s.projectName && s.projectName.toLowerCase() === currentName) {
+        return true;
+      }
+      return false;
+    });
+  }
+
+  /**
+   * Automates pasting the conversation title and pressing Enter in the native picker.
+   * Zero manual intervention, lightweight, non-intrusive SendKeys automation.
+   */
+  public automatePasteAndSelect(title: string): void {
+    if (process.platform === 'win32') {
+      try {
+        const tempVbs = path.join(os.tmpdir(), `ag_paste_${Date.now()}.vbs`);
+        const vbsContent = [
+          'Set WshShell = CreateObject("WScript.Shell")',
+          'WScript.Sleep 160',
+          'WshShell.SendKeys "^v"',
+          'WScript.Sleep 200',
+          'WshShell.SendKeys "{ENTER}"',
+        ].join('\r\n');
+        fs.writeFileSync(tempVbs, vbsContent, 'utf8');
+
+        const proc = child_process.spawn('cscript.exe', ['//Nologo', tempVbs], {
+          windowsHide: true,
+          detached: true,
+          stdio: 'ignore',
+        });
+        proc.unref();
+
+        setTimeout(() => {
+          try {
+            if (fs.existsSync(tempVbs)) fs.unlinkSync(tempVbs);
+          } catch {
+            // ignore
+          }
+        }, 4000);
+      } catch (err) {
+        console.warn('[ConversationService] Windows SendKeys automation error:', err);
+      }
+    } else if (process.platform === 'darwin') {
+      try {
+        const script =
+          'tell application "System Events" to keystroke "v" using command down\ndelay 0.2\ntell application "System Events" to key code 36';
+        child_process.exec(`osascript -e '${script}'`);
+      } catch {
+        // ignore
+      }
+    } else {
+      try {
+        child_process.exec('xdotool key ctrl+v Return');
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /**
    * Opens the conversation session in Antigravity IDE:
-   * 1. If it belongs to a different project workspace, prompts the user cleanly instead of forcing a new window.
+   * 1. If it belongs to a different project workspace, prompts smoothly to switch.
    * 2. Focuses/opens the Antigravity Chat panel.
    * 3. Copies the session title to the clipboard for fast filtering.
    * 4. Opens Antigravity's native Conversation Picker (Ctrl+Shift+A).
-   * 5. Never uses destructive keystroke automation (VBScript/SendKeys/AppActivate).
+   * 5. Automatically pastes title and selects the conversation with zero manual prompt.
    */
   public async openConversation(session: ConversationSession): Promise<void> {
-    // 1. If conversation belongs to another project, ask user before switching windows
+    const cleanTitle = session.title.replace(/[\r\n\t]+/g, ' ').trim();
+
+    // 1. If conversation belongs to another project, ask user or switch smoothly
     const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (session.workspacePath && currentWorkspaceFolder && fs.existsSync(session.workspacePath)) {
       const normCurrent = path.normalize(currentWorkspaceFolder).toLowerCase();
@@ -428,13 +587,36 @@ export class ConversationService {
       ) {
         const choice = await vscode.window.showInformationMessage(
           `Conversation belongs to workspace "${session.projectName}". How would you like to open it?`,
-          'Open Workspace in New Window',
+          'Open/Switch to Workspace',
           'Open in Current Window',
           'View Transcript File'
         );
-        if (choice === 'Open Workspace in New Window') {
+        if (choice === 'Open/Switch to Workspace') {
+          // Store pending conversation state for the destination window
+          try {
+            const pendingFile = path.join(os.homedir(), '.gemini', 'pending_open_chat.json');
+            fs.writeFileSync(
+              pendingFile,
+              JSON.stringify({
+                sessionId: session.id,
+                title: session.title,
+                workspacePath: session.workspacePath,
+                timestamp: Date.now(),
+              }),
+              'utf8'
+            );
+          } catch {
+            // ignore
+          }
+
+          // Copy title to clipboard
+          if (cleanTitle) {
+            await vscode.env.clipboard.writeText(cleanTitle);
+          }
+
+          // Switch or open folder without forcing a duplicate blank window
           const targetUri = vscode.Uri.file(session.workspacePath);
-          await vscode.commands.executeCommand('vscode.openFolder', targetUri, { forceNewWindow: true });
+          await vscode.commands.executeCommand('vscode.openFolder', targetUri, { forceNewWindow: false });
           return;
         } else if (choice === 'View Transcript File') {
           await this.openTranscript(session);
@@ -456,39 +638,12 @@ export class ConversationService {
       }
     }
 
-    // 3. Copy clean search title to clipboard for quick paste in picker
-    const cleanTitle = session.title
-      .replace(/[\r\n\t]/g, ' ')
-      .replace(/[^\w\s\u0600-\u06FF]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 35);
-
+    // 3. Copy verbatim title to clipboard (preserving Persian ZWNJ, full text, and symbols)
     if (cleanTitle) {
       await vscode.env.clipboard.writeText(cleanTitle);
     }
 
-    // 4. On Windows, automatically paste and select without AppActivate or destructive keys
-    if (process.platform === 'win32' && cleanTitle) {
-      try {
-        const tempVbs = path.join(os.tmpdir(), 'antigravity_paste_chat.vbs');
-        const vbsScript = [
-          'Set WshShell = CreateObject("WScript.Shell")',
-          'WScript.Sleep 450',
-          'WshShell.SendKeys "^v"',
-          'WScript.Sleep 400',
-          'WshShell.SendKeys "{ENTER}"',
-          'WScript.Sleep 450',
-          'WshShell.SendKeys "{ENTER}"',
-        ].join('\r\n');
-        fs.writeFileSync(tempVbs, vbsScript, 'utf8');
-        child_process.exec(`wscript.exe "${tempVbs}"`);
-      } catch (e) {
-        console.warn('[ConversationService] Keystroke paste error:', e);
-      }
-    }
-
-    // 5. Open native Antigravity Conversation Picker (Ctrl+Shift+A)
+    // 4. Open native Antigravity Conversation Picker (Ctrl+Shift+A)
     try {
       await vscode.commands.executeCommand('antigravity.openConversationPicker');
     } catch {
@@ -503,16 +658,8 @@ export class ConversationService {
       }
     }
 
-    // 5. Notify the user with an option to open the raw transcript
-    const shortTitle = cleanTitle.length > 50 ? cleanTitle.slice(0, 47) + '...' : cleanTitle;
-    vscode.window.showInformationMessage(
-      `Copied "${shortTitle}" to clipboard. Press Ctrl+V to search in Past Conversations.`,
-      'Open Transcript File'
-    ).then((selected) => {
-      if (selected === 'Open Transcript File') {
-        this.openTranscript(session);
-      }
-    });
+    // 5. Automated paste and select (100% automated, no manual prompt)
+    this.automatePasteAndSelect(cleanTitle);
   }
 
   /**

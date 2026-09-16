@@ -47,6 +47,9 @@ export class LanguageServerClient {
   private cachedActiveModel: string | null = null;
   private lastModelCheck = 0;
 
+  private isDiscovering = false;
+  private discoveryPromise: Promise<LSEndpoint[]> | null = null;
+
   public static getInstance(): LanguageServerClient {
     if (!LanguageServerClient.instance) {
       LanguageServerClient.instance = new LanguageServerClient();
@@ -56,35 +59,68 @@ export class LanguageServerClient {
 
   /**
    * Discovers active Antigravity Language Server processes and their TCP listening ports.
+   * Runs non-interactively with windowsHide: true and concurrency guard to eliminate any shell flashes.
    */
   public async findLSEndpoints(forceRefresh = false): Promise<LSEndpoint[]> {
     const now = Date.now();
-    if (!forceRefresh && this.cachedEndpoints.length > 0 && now - this.lastEndpointsDiscovery < 15000) {
+    if (!forceRefresh && this.cachedEndpoints.length > 0 && now - this.lastEndpointsDiscovery < 30000) {
       return this.cachedEndpoints;
     }
 
+    if (this.discoveryPromise) {
+      return this.discoveryPromise;
+    }
+
+    this.discoveryPromise = this.doFindLSEndpoints(forceRefresh);
+    try {
+      const res = await this.discoveryPromise;
+      return res;
+    } finally {
+      this.discoveryPromise = null;
+    }
+  }
+
+  private async doFindLSEndpoints(forceRefresh: boolean): Promise<LSEndpoint[]> {
+    const now = Date.now();
     const endpoints: LSEndpoint[] = [];
     const isWindows = process.platform === 'win32';
 
     try {
       if (isWindows) {
-        const ps = `powershell -NoProfile -Command "Get-WmiObject Win32_Process | Where-Object { $_.ProcessName -like '*language_server*' -or $_.CommandLine -like '*language_server*' } | Select-Object -Property ProcessId, CommandLine | ForEach-Object { $_.ProcessId.ToString() + '###' + $_.CommandLine }"`;
-        const { stdout } = await execAsync(ps, { timeout: 6000 });
-        const lines = stdout.split('\n');
-        const candidates: { pid: string; csrfToken: string }[] = [];
+        // Use wmic without interactive console window or PowerShell flash
+        let wmicOutput = '';
+        try {
+          const { stdout } = await execAsync(
+            'wmic process where "name like \'%language_server%\'" get ProcessId,CommandLine /format:csv',
+            { timeout: 5000, windowsHide: true }
+          );
+          wmicOutput = stdout;
+        } catch {
+          // Fallback to tasklist / safe command if wmic is restricted
+          try {
+            const { stdout } = await execAsync('tasklist /FI "IMAGENAME eq language_server.exe" /FO CSV /NH', {
+              timeout: 4000,
+              windowsHide: true,
+            });
+            wmicOutput = stdout;
+          } catch {
+            // ignore
+          }
+        }
 
-        for (const line of lines) {
-          if (!line.includes('###')) continue;
-          const [pidStr, cmdLine] = line.split('###');
-          const pid = pidStr.trim();
-          const csrfMatch = cmdLine.match(/--csrf_token[\s=]+([\w-]+)/);
-          if (pid && csrfMatch) {
-            candidates.push({ pid, csrfToken: csrfMatch[1] });
+        const candidates: { pid: string; csrfToken: string }[] = [];
+        if (wmicOutput) {
+          for (const line of wmicOutput.split('\r\n')) {
+            const csrfMatch = line.match(/--csrf_token[\s=]+([\w-]+)/);
+            const pidMatch = line.match(/,(\d+)\s*$/) || line.match(/(\d+)/);
+            if (csrfMatch && pidMatch) {
+              candidates.push({ pid: pidMatch[1], csrfToken: csrfMatch[1] });
+            }
           }
         }
 
         if (candidates.length > 0) {
-          const { stdout: netstatOut } = await execAsync('netstat -ano -p TCP', { timeout: 6000 });
+          const { stdout: netstatOut } = await execAsync('netstat -ano -p TCP', { timeout: 5000, windowsHide: true });
           for (const cand of candidates) {
             for (const nLine of netstatOut.split('\n')) {
               if (nLine.includes('LISTENING') && nLine.trim().endsWith(cand.pid)) {
@@ -123,9 +159,11 @@ export class LanguageServerClient {
       console.warn('[LanguageServerClient] Endpoint discovery error:', err);
     }
 
-    this.cachedEndpoints = endpoints;
-    this.lastEndpointsDiscovery = now;
-    return endpoints;
+    if (endpoints.length > 0) {
+      this.cachedEndpoints = endpoints;
+      this.lastEndpointsDiscovery = now;
+    }
+    return this.cachedEndpoints.length > 0 ? this.cachedEndpoints : endpoints;
   }
 
   /**

@@ -214,7 +214,7 @@ export class AccountService {
 
             if (!written) {
               const sql = `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityAuthStatus', CAST(X'${hexAuth}' AS TEXT)); INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityUnifiedStateSync.userStatus', CAST(X'${hexUss}' AS TEXT));`;
-              child_process.exec(`sqlite3 "${dbPath}" "${sql}"`, () => {});
+              child_process.exec(`sqlite3 "${dbPath}" "${sql}"`, { windowsHide: true }, () => {});
             }
           }
         }
@@ -278,8 +278,8 @@ export class AccountService {
         if (appData) {
           const dbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
           if (fs.existsSync(dbPath)) {
-            const cmd = `python -c "import sqlite3, base64; cur=sqlite3.connect(r'${dbPath}').cursor(); cur.execute('SELECT value FROM ItemTable WHERE key=\\'antigravityUnifiedStateSync.userStatus\\''); r=cur.fetchone(); print(r[0] if r else '')"`;
-            const { stdout } = await execAsync(cmd, { timeout: 3000 }).catch(() => ({ stdout: '' }));
+            const cmd = `pythonw -c "import sqlite3, base64; cur=sqlite3.connect(r'${dbPath}').cursor(); cur.execute('SELECT value FROM ItemTable WHERE key=\\'antigravityUnifiedStateSync.userStatus\\''); r=cur.fetchone(); print(r[0] if r else '')"`;
+            const { stdout } = await execAsync(cmd, { timeout: 3000, windowsHide: true }).catch(() => ({ stdout: '' }));
             if (stdout && stdout.trim().length > 500) {
               const raw = Buffer.from(stdout.trim(), 'base64');
               const top = parseProtoFields(raw);

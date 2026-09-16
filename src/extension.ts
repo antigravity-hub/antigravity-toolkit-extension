@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { AccountService } from './services/accountService';
 import { QuotaService } from './services/quotaService';
 import { ConversationService } from './services/conversationService';
@@ -236,6 +239,51 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }
   });
+
+  // 8. Auto-load pending conversation if opened from another workspace
+  setTimeout(async () => {
+    try {
+      const pendingFile = path.join(os.homedir(), '.gemini', 'pending_open_chat.json');
+      if (fs.existsSync(pendingFile)) {
+        const raw = fs.readFileSync(pendingFile, 'utf8');
+        fs.unlinkSync(pendingFile);
+        const data = JSON.parse(raw);
+        if (data && data.title && Date.now() - (data.timestamp || 0) < 60000) {
+          const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+          if (
+            !data.workspacePath ||
+            !currentWorkspaceFolder ||
+            path.normalize(currentWorkspaceFolder).toLowerCase() === path.normalize(data.workspacePath).toLowerCase()
+          ) {
+            console.log(`[Antigravity Toolkit] Activating pending conversation "${data.title}"...`);
+            const cleanTitle = String(data.title).replace(/[\r\n\t]+/g, ' ').trim();
+            await vscode.env.clipboard.writeText(cleanTitle);
+
+            try {
+              await vscode.commands.executeCommand('antigravity.openChatView');
+            } catch {
+              // ignore
+            }
+
+            try {
+              await vscode.commands.executeCommand('antigravity.openConversationPicker');
+            } catch {
+              try {
+                await vscode.commands.executeCommand('openConversationPicker');
+              } catch {
+                // ignore
+              }
+            }
+
+            // Automatically paste and select in picker
+            conversationService.automatePasteAndSelect(cleanTitle);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Antigravity Toolkit] Error handling pending chat:', e);
+    }
+  }, 1200);
 
   console.log('[Antigravity Toolkit 2.0] Activated successfully.');
 }

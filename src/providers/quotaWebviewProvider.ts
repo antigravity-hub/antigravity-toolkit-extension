@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { QuotaService } from '../services/quotaService';
 import { AccountService } from '../services/accountService';
 import { AutoSwitchService } from '../services/autoSwitchService';
@@ -95,30 +96,43 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const quotas = await this.quotaService.getActiveQuotas();
-    const activeAccount = this.accountService.getActiveAccount();
-    const accounts = this.accountService.getAccounts();
-    const autoSwitchStatus = this.autoSwitchService.getStatus();
-    const conversations = await this.conversationService.getConversations();
-    const [isShieldOnline, tokenStats, activeModelName] = await Promise.all([
+    const [
+      quotas,
+      activeAccount,
+      accounts,
+      autoSwitchStatus,
+      allConversations,
+      workspaceConversations,
+      isShieldOnline,
+      tokenStats,
+    ] = await Promise.all([
+      this.quotaService.getActiveQuotas(),
+      this.accountService.getActiveAccount(),
+      this.accountService.getAccounts(),
+      this.autoSwitchService.getStatus(),
+      this.conversationService.getConversations(),
+      this.conversationService.getActiveWorkspaceConversations(),
       ShieldBridge.getInstance().isShieldOnline(),
       ShieldBridge.getInstance().getTokenStats(),
-      LanguageServerClient.getInstance().getActiveChatModel(conversations[0]?.id),
     ]);
 
+    const activeModelName = await LanguageServerClient.getInstance().getActiveChatModel(
+      workspaceConversations[0]?.id || allConversations[0]?.id
+    );
+
     // Detect currently open workspace in VS Code / Antigravity IDE
+    const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
     const currentWorkspaceName =
       vscode.workspace.name ||
-      (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0]
-        ? vscode.workspace.workspaceFolders[0].name
-        : '');
+      (currentWorkspaceFolder ? path.basename(currentWorkspaceFolder) : '');
 
     this._view.webview.html = this.renderHtml(
       activeAccount,
       quotas,
       accounts,
       autoSwitchStatus,
-      conversations,
+      allConversations,
+      workspaceConversations,
       isShieldOnline,
       currentWorkspaceName,
       tokenStats,
@@ -131,7 +145,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     quotas: ModelQuota[],
     accounts: Account[],
     autoSwitchStatus: { enabled: boolean; thresholdPercent: number; cooldownMinutes: number },
-    conversations: ConversationSession[],
+    allConversations: ConversationSession[],
+    workspaceConversations: ConversationSession[],
     isShieldOnline: boolean,
     currentWorkspaceName: string,
     tokenStats: TokenUsageStats | null,
@@ -304,10 +319,80 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       `;
     };
 
-    // Group Conversations by Project
+    const nowTime = Date.now();
+    const oneDayMs = 24 * 60 * 60 * 1000;
+
+    const formatLargeTokens = (val: number): string => {
+      if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1)}M`;
+      if (val >= 1_000) return `${(val / 1_000).toFixed(1)}k`;
+      return `${val}`;
+    };
+
+    const renderTimelineNodes = (sessionList: ConversationSession[]) => {
+      return sessionList
+        .map((s, sIdx) => {
+          const rawTokens = s.tokenEstimate || Math.round(s.stepCount * 1400);
+          const tokens = `${formatLargeTokens(rawTokens)} tokens`;
+
+          const diffDays = (nowTime - s.updatedAt) / oneDayMs;
+          let dateTag = s.dateFormatted;
+          let datePillClass = 'date-earlier';
+          if (diffDays < 1) {
+            dateTag = '🟢 Today • ' + new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            datePillClass = 'date-today';
+          } else if (diffDays < 2) {
+            dateTag = '🟡 Yesterday • ' + new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            datePillClass = 'date-yesterday';
+          } else if (diffDays < 7) {
+            dateTag = '🔵 ' + s.dateFormatted;
+            datePillClass = 'date-week';
+          }
+
+          const safeTitle = s.title.replace(/['"\\`]/g, ' ').trim();
+          return `
+          <div class="timeline-node" onclick="handleOpenChat(this, '${s.id}', '${safeTitle}')">
+            <div class="node-bullet">
+              <span class="node-num">${sIdx + 1}</span>
+            </div>
+            <div class="node-content">
+              <div class="node-header">
+                <span class="node-title" title="${s.title}">${s.title}</span>
+                <span class="node-token-tag">${tokens}</span>
+              </div>
+              <div class="node-footer">
+                <div class="node-meta-left">
+                  <span class="node-date-tag ${datePillClass}">${dateTag}</span>
+                  <span class="node-steps-tag">${s.stepCount} Steps</span>
+                </div>
+                <div class="node-footer-btns" style="display: inline-flex; gap: 4px; align-items: center;">
+                  <button type="button" class="node-open-btn node-file-btn" onclick="event.stopPropagation(); openTranscriptOnly('${s.id}')" title="Open raw transcript file in editor" style="background: rgba(148, 163, 184, 0.1); border-color: rgba(148, 163, 184, 0.25); color: #cbd5e1;">
+                    <span>📄 Log</span>
+                  </button>
+                  <button type="button" class="node-open-btn" id="btn-open-${s.id}" onclick="event.stopPropagation(); handleOpenChat(this, '${s.id}', '${safeTitle}')" title="Open in Antigravity Chat panel">
+                    <svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+                      <path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/>
+                    </svg>
+                    <span>Open in Chat</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+        })
+        .join('');
+    };
+
+    // 1. Workspace specific timeline
+    const workspaceTimelineHtml =
+      workspaceConversations.length > 0
+        ? `<div class="timeline-tree">${renderTimelineNodes(workspaceConversations)}</div>`
+        : `<div style="opacity:0.65; text-align:center; padding:18px 8px; font-size:11px;">No chats recorded for workspace <b>${currentWorkspaceName || 'Current'}</b></div>`;
+
+    // 2. Group All Conversations by Project
     const projectsMap = new Map<string, ConversationSession[]>();
-    for (const conv of conversations) {
-      const pName = conv.projectName || 'General Workspace';
+    for (const conv of allConversations) {
+      const pName = conv.projectName || 'General';
       if (!projectsMap.has(pName)) {
         projectsMap.set(pName, []);
       }
@@ -316,8 +401,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     // Sort projects so CURRENT WORKSPACE is first!
     const sortedProjectEntries = Array.from(projectsMap.entries()).sort(([nameA, sessionsA], [nameB, sessionsB]) => {
-      const isCurrentA = currentWorkspaceName && nameA.toLowerCase().includes(currentWorkspaceName.toLowerCase());
-      const isCurrentB = currentWorkspaceName && nameB.toLowerCase().includes(currentWorkspaceName.toLowerCase());
+      const isCurrentA = currentWorkspaceName && nameA.toLowerCase() === currentWorkspaceName.toLowerCase();
+      const isCurrentB = currentWorkspaceName && nameB.toLowerCase() === currentWorkspaceName.toLowerCase();
       if (isCurrentA && !isCurrentB) return -1;
       if (!isCurrentA && isCurrentB) return 1;
       const latestA = sessionsA[0]?.updatedAt || 0;
@@ -325,80 +410,13 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       return latestB - latestA;
     });
 
-    const nowTime = Date.now();
-    const oneDayMs = 24 * 60 * 60 * 1000;
-
     const projectsHtml = sortedProjectEntries
       .map(([pName, sessions], pIdx) => {
-        // Sort sessions descending by date (newest first)
         sessions.sort((a, b) => b.updatedAt - a.updatedAt);
-
-        const formatLargeTokens = (val: number): string => {
-          if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1)}M`;
-          if (val >= 1_000) return `${(val / 1_000).toFixed(1)}k`;
-          return `${val}`;
-        };
-
         const totalTokens = sessions.reduce((sum, s) => sum + (s.tokenEstimate || 0), 0);
         const tokensFormatted = formatLargeTokens(totalTokens);
-
-        const isCurrentProject = currentWorkspaceName && pName.toLowerCase().includes(currentWorkspaceName.toLowerCase());
-        // Current project is open by default, other projects collapsed by default!
+        const isCurrentProject = currentWorkspaceName && pName.toLowerCase() === currentWorkspaceName.toLowerCase();
         const isOpenByDefault = isCurrentProject || pIdx === 0;
-
-        const timelineNodes = sessions
-          .map((s, sIdx) => {
-            const rawTokens = s.tokenEstimate || Math.round(s.stepCount * 1400);
-            const tokens = `${formatLargeTokens(rawTokens)} tokens`;
-
-            // Friendly relative date tagging
-            const diffDays = (nowTime - s.updatedAt) / oneDayMs;
-            let dateTag = s.dateFormatted;
-            let datePillClass = 'date-earlier';
-            if (diffDays < 1) {
-              dateTag = '🟢 Today • ' + new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              datePillClass = 'date-today';
-            } else if (diffDays < 2) {
-              dateTag = '🟡 Yesterday • ' + new Date(s.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-              datePillClass = 'date-yesterday';
-            } else if (diffDays < 7) {
-              dateTag = '🔵 ' + s.dateFormatted;
-              datePillClass = 'date-week';
-            }
-
-            const safeTitle = s.title.replace(/['"\\`]/g, ' ').trim();
-            return `
-            <div class="timeline-node" onclick="handleOpenChat(this, '${s.id}', '${safeTitle}')">
-              <div class="node-bullet">
-                <span class="node-num">${sIdx + 1}</span>
-              </div>
-              <div class="node-content">
-                <div class="node-header">
-                  <span class="node-title" title="${s.title}">${s.title}</span>
-                  <span class="node-token-tag">${tokens}</span>
-                </div>
-                <div class="node-footer">
-                  <div class="node-meta-left">
-                    <span class="node-date-tag ${datePillClass}">${dateTag}</span>
-                    <span class="node-steps-tag">${s.stepCount} Steps</span>
-                  </div>
-                  <div class="node-footer-btns" style="display: inline-flex; gap: 4px; align-items: center;">
-                    <button type="button" class="node-open-btn node-file-btn" onclick="event.stopPropagation(); openTranscriptOnly('${s.id}')" title="Open raw transcript file in editor" style="background: rgba(148, 163, 184, 0.1); border-color: rgba(148, 163, 184, 0.25); color: #cbd5e1;">
-                      <span>📄 Log</span>
-                    </button>
-                    <button type="button" class="node-open-btn" id="btn-open-${s.id}" onclick="event.stopPropagation(); handleOpenChat(this, '${s.id}', '${safeTitle}')" title="Open in Antigravity Chat panel">
-                      <svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
-                        <path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/>
-                      </svg>
-                      <span>Open in Chat</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          `;
-          })
-          .join('');
 
         return `
         <div class="project-cluster-card ${isOpenByDefault ? 'is-expanded' : 'is-collapsed'} ${isCurrentProject ? 'is-current' : ''}" id="proj-card-${pIdx}">
@@ -416,7 +434,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           </div>
           <div class="project-body" id="proj-body-${pIdx}" style="${isOpenByDefault ? '' : 'display: none;'}">
             <div class="timeline-tree">
-              ${timelineNodes}
+              ${renderTimelineNodes(sessions)}
             </div>
           </div>
         </div>
@@ -1802,6 +1820,46 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       color: var(--text-muted);
     }
 
+    /* Chat Scope Filter Bar */
+    .chat-scope-bar {
+      display: flex;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 3px;
+      gap: 4px;
+      margin-bottom: 6px;
+    }
+
+    .chat-scope-btn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      font-size: 10px;
+      font-weight: 600;
+      padding: 5px 8px;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .chat-scope-btn:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .chat-scope-btn.active {
+      background: var(--seafoam-bg);
+      border-color: var(--seafoam);
+      color: var(--seafoam-light);
+      box-shadow: 0 0 10px var(--seafoam-glow);
+    }
+
     /* Tab 3: Remote Control */
     .remote-card {
       background: var(--card-bg);
@@ -2043,12 +2101,30 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     <!-- TAB 2: CHATS & PROJECT GRAPH -->
     <div id="tab-history" class="tab-content">
-      <div class="subhead-title">
-        <span>Conversations by Project</span>
-        <span style="font-size: 9px; color: var(--seafoam-light);">${conversations.length} Total Sessions</span>
+      <div class="chat-scope-bar">
+        <button class="chat-scope-btn active" id="btn-scope-workspace" onclick="switchChatScope('workspace')">
+          <span>📂 ${currentWorkspaceName || 'Current'} (${workspaceConversations.length})</span>
+        </button>
+        <button class="chat-scope-btn" id="btn-scope-all" onclick="switchChatScope('all')">
+          <span>🌐 All Projects (${allConversations.length})</span>
+        </button>
       </div>
 
-      ${projectsHtml || '<div style="opacity:0.6; text-align:center; padding:16px;">No conversation transcripts found</div>'}
+      <div id="scope-workspace-view" style="display: flex; flex-direction: column; gap: 8px;">
+        <div class="subhead-title">
+          <span>${currentWorkspaceName || 'Workspace'} Sessions</span>
+          <span style="font-size: 9px; color: var(--seafoam-light);">${workspaceConversations.length} Chats</span>
+        </div>
+        ${workspaceTimelineHtml}
+      </div>
+
+      <div id="scope-all-view" style="display: none; flex-direction: column; gap: 8px;">
+        <div class="subhead-title">
+          <span>All Discovered Projects</span>
+          <span style="font-size: 9px; color: var(--seafoam-light);">${allConversations.length} Total</span>
+        </div>
+        ${projectsHtml || '<div style="opacity:0.6; text-align:center; padding:16px;">No conversation transcripts found</div>'}
+      </div>
     </div>
 
     <!-- TAB 3: REMOTE CONTROL -->
@@ -2250,6 +2326,19 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           card.classList.add('is-collapsed');
         }
       }
+    }
+
+    function switchChatScope(scope) {
+      const isWs = scope === 'workspace';
+      const btnWs = document.getElementById('btn-scope-workspace');
+      const btnAll = document.getElementById('btn-scope-all');
+      const viewWs = document.getElementById('scope-workspace-view');
+      const viewAll = document.getElementById('scope-all-view');
+
+      if (btnWs) btnWs.classList.toggle('active', isWs);
+      if (btnAll) btnAll.classList.toggle('active', !isWs);
+      if (viewWs) viewWs.style.display = isWs ? 'flex' : 'none';
+      if (viewAll) viewAll.style.display = isWs ? 'none' : 'flex';
     }
 
     // Live countdown timer script ticking every 1 second in DOM

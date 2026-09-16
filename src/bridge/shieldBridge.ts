@@ -563,7 +563,7 @@ export class ShieldBridge {
           headers['Authorization'] = `Bearer ${apiKey}`;
         }
 
-        const pollPath = baseUrl.includes('/api') ? '/toolkit/commands/poll?timeout=15' : '/api/toolkit/commands/poll?timeout=15';
+        const pollPath = '/toolkit/commands/poll?timeout=15';
         const url = new URL(pollPath, baseUrl);
         const result = await new Promise<any>((resolve) => {
           const req = http.get(url, { headers, timeout: 25000 }, (res) => {
@@ -595,6 +595,9 @@ export class ShieldBridge {
           } catch (err) {
             console.error('[ShieldBridge] Error handling command from Shield:', err);
           }
+        } else {
+          // Prevent tight loop when server returns timeout, non-200, or empty poll
+          await new Promise((r) => setTimeout(r, 2000));
         }
       } catch {
         // short delay on error
