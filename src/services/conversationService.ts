@@ -777,23 +777,12 @@ export class ConversationService {
       }
     }
 
-    // 2. Focus / Open the Antigravity Chat / Agent panel
-    try {
-      await vscode.commands.executeCommand('antigravity.openChatView');
-    } catch {
-      try {
-        await vscode.commands.executeCommand('antigravity.openAgent');
-      } catch {
-        // ignore
-      }
-    }
-
-    // 3. Copy verbatim title to clipboard (preserving Persian ZWNJ, full text, and symbols)
+    // 2. Copy verbatim title to clipboard (preserving Persian ZWNJ, full text, and symbols)
     if (cleanTitle) {
       await vscode.env.clipboard.writeText(cleanTitle);
     }
 
-    // 4. Automated execution: Ctrl+A -> wait -> Ctrl+V -> wait -> Down -> wait -> Enter
+    // 3. Automated execution: Ctrl+A -> wait -> Ctrl+V -> wait -> Down -> wait -> Enter (NO Ctrl+L!)
     this.automatePasteAndSelect(cleanTitle);
   }
 

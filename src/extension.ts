@@ -259,13 +259,7 @@ export function activate(context: vscode.ExtensionContext) {
             const cleanTitle = String(data.title).replace(/[\r\n\t]+/g, ' ').trim();
             await vscode.env.clipboard.writeText(cleanTitle);
 
-            try {
-              await vscode.commands.executeCommand('antigravity.openChatView');
-            } catch {
-              // ignore
-            }
-
-            // Automatically open with Ctrl+A, paste, navigate down, and select
+            // Automatically open with Ctrl+A, paste, navigate down, and select (NO Ctrl+L!)
             conversationService.automatePasteAndSelect(cleanTitle);
           }
         }
