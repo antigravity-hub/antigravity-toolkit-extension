@@ -164,14 +164,14 @@ export class ConversationService {
    * (antigravityUnifiedStateSync.trajectorySummaries) with zero lag.
    */
   /**
-   * Helper to decode Protobuf varint from Buffer
+   * Helper to decode Protobuf varint from Buffer without 32-bit overflow
    */
   private parseVarint(data: Buffer, offset: number): [number, number] {
     let res = 0;
     let shift = 0;
     while (offset < data.length) {
       const b = data[offset++];
-      res |= (b & 0x7f) << shift;
+      res += (b & 0x7f) * Math.pow(2, shift);
       shift += 7;
       if ((b & 0x80) === 0) break;
     }
@@ -218,6 +218,7 @@ export class ConversationService {
   /**
    * Loads official conversation titles and workspaces from state.vscdb
    * (antigravityUnifiedStateSync.trajectorySummaries) with zero lag via pure Protobuf parser.
+   * Authoritative source: Antigravity IDE database only.
    */
   private loadTrajectorySummaries(): void {
     const now = Date.now();
@@ -227,85 +228,101 @@ export class ConversationService {
 
     try {
       const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
-      const possibleDbs = [
-        path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
-        path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
-      ];
+      const ideDbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+      const fallbackDbPath = path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
+      const dbPath = fs.existsSync(ideDbPath) ? ideDbPath : fs.existsSync(fallbackDbPath) ? fallbackDbPath : '';
 
-      for (const dbPath of possibleDbs) {
-        if (!fs.existsSync(dbPath)) continue;
+      if (!dbPath) {
+        return;
+      }
 
-        try {
-          const val = child_process
-            .execSync(
-              `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';"`,
-              { maxBuffer: 50 * 1024 * 1024, timeout: 7000, windowsHide: true }
-            )
-            .toString()
-            .trim();
+      try {
+        const val = child_process
+          .execSync(
+            `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';"`,
+            { maxBuffer: 50 * 1024 * 1024, timeout: 7000, windowsHide: true }
+          )
+          .toString()
+          .trim();
 
-          if (!val) continue;
+        if (!val) return;
 
-          const buf = Buffer.from(val, 'base64');
-          const topFields = this.parseProto(buf);
+        const buf = Buffer.from(val, 'base64');
+        const topFields = this.parseProto(buf);
 
-          for (const f of topFields) {
-            if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
-            const sub = this.parseProto(f.val);
-            let uuid = '';
-            let b64Payload: Buffer | null = null;
-            for (const s of sub) {
-              if (s.fieldNum === 1 && s.type === 'bytes') {
-                uuid = s.val.toString('utf8');
-              } else if (s.fieldNum === 2 && s.type === 'bytes') {
-                b64Payload = s.val;
-              }
+        for (const f of topFields) {
+          if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
+          const sub = this.parseProto(f.val);
+          let uuid = '';
+          let b64Payload: Buffer | null = null;
+          for (const s of sub) {
+            if (s.fieldNum === 1 && s.type === 'bytes') {
+              uuid = s.val.toString('utf8');
+            } else if (s.fieldNum === 2 && s.type === 'bytes') {
+              b64Payload = s.val;
             }
+          }
 
-            if (uuid && b64Payload && !this.trajectoryMap.has(uuid)) {
-              try {
-                const innerBuf = Buffer.from(b64Payload.toString('utf8'), 'base64');
-                const innerFields = this.parseProto(innerBuf);
-                let title = '';
-                let workspace = '';
-                let workspaceFullPath = '';
-                let protoTime = 0;
+          if (uuid && b64Payload && !this.trajectoryMap.has(uuid)) {
+            try {
+              const innerBuf = Buffer.from(b64Payload.toString('utf8'), 'base64');
+              const innerFields = this.parseProto(innerBuf);
+              let title = '';
+              let workspace = '';
+              let workspaceFullPath = '';
+              let protoTimestamp = 0;
 
-                for (const inf of innerFields) {
-                  if (inf.fieldNum === 1 && inf.type === 'bytes') {
-                    title = inf.val.toString('utf8');
-                  } else if (inf.fieldNum === 2 && inf.type === 'varint') {
-                    protoTime = inf.val;
-                  } else if (inf.fieldNum === 9 && inf.type === 'bytes') {
-                    const wFields = this.parseProto(inf.val);
-                    for (const wf of wFields) {
-                      if (wf.type === 'bytes') {
-                        const str = wf.val.toString('utf8');
-                        const match = str.match(/file:\/\/\/([^\s\x00-\x1f"']+)/);
-                        if (match) {
-                          const raw = decodeURIComponent(match[0]);
-                          const clean = raw.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
+              for (const inf of innerFields) {
+                if (inf.fieldNum === 1 && inf.type === 'bytes') {
+                  title = inf.val.toString('utf8');
+                } else if (inf.fieldNum === 7 && inf.type === 'bytes') {
+                  // Protobuf Timestamp: subfield 1 is varint seconds
+                  const tFields = this.parseProto(inf.val);
+                  for (const tf of tFields) {
+                    if (tf.fieldNum === 1 && tf.type === 'varint') {
+                      protoTimestamp = tf.val * 1000;
+                    }
+                  }
+                } else if (inf.fieldNum === 3 && inf.type === 'bytes' && !protoTimestamp) {
+                  // Fallback Created At
+                  const tFields = this.parseProto(inf.val);
+                  for (const tf of tFields) {
+                    if (tf.fieldNum === 1 && tf.type === 'varint') {
+                      protoTimestamp = tf.val * 1000;
+                    }
+                  }
+                } else if (inf.fieldNum === 9 && inf.type === 'bytes') {
+                  // Workspace sub-message
+                  const wFields = this.parseProto(inf.val);
+                  for (const wf of wFields) {
+                    if ((wf.fieldNum === 1 || wf.fieldNum === 2) && wf.type === 'bytes') {
+                      const rawStr = wf.val.toString('utf8');
+                      if (rawStr.startsWith('file:///')) {
+                        try {
+                          const dec = decodeURIComponent(rawStr);
+                          const clean = dec.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
                           const norm = path.normalize(clean);
                           workspaceFullPath = norm;
                           workspace = path.basename(norm);
-                        }
+                          break;
+                        } catch {}
                       }
                     }
                   }
                 }
-
-                if (title && title.length > 1) {
-                  const updatedAt = protoTime > 100000000000 ? protoTime : protoTime > 0 ? protoTime * 1000 : undefined;
-                  this.trajectoryMap.set(uuid, { title, workspace, workspaceFullPath, updatedAt });
-                }
-              } catch {
-                // ignore item parse error
               }
+
+              if (title && title.length > 1) {
+                const updatedAt = protoTimestamp || undefined;
+                this.trajectoryMap.set(uuid, { title, workspace, workspaceFullPath, updatedAt });
+              }
+            } catch {
+              // ignore item parse error
             }
           }
-        } catch {
-          // ignore single db error
         }
+      } catch {
+        // ignore single db error
       }
       this.lastTrajectoryLoad = now;
     } catch (e) {
@@ -445,6 +462,14 @@ export class ConversationService {
             }
           } catch {}
           break;
+        } else {
+          const bFolder = path.join(bDir, convId);
+          if (fs.existsSync(bFolder)) {
+            try {
+              const stat = fs.statSync(bFolder);
+              mtime = Math.max(mtime, stat.mtimeMs);
+            } catch {}
+          }
         }
       }
 
@@ -463,10 +488,16 @@ export class ConversationService {
 
       // Sanitize title
       let finalTitle = this.sanitizeTitle(traj.title);
-      if (finalTitle.includes('?') || finalTitle.includes('؟') || finalTitle.length > 48) {
+      if (
+        finalTitle.includes('?') ||
+        finalTitle.includes('؟') ||
+        finalTitle.length > 48 ||
+        finalTitle.startsWith('file:') ||
+        finalTitle.includes('file:///')
+      ) {
         if (planTitle) finalTitle = planTitle;
       }
-      if (!finalTitle) {
+      if (!finalTitle || finalTitle.startsWith('file:') || finalTitle.includes('file:///')) {
         finalTitle = planTitle || (previewText ? this.sanitizeTitle(previewText) : `Session ${convId.slice(0, 8)}`);
       }
 
@@ -482,6 +513,20 @@ export class ConversationService {
       }
       if (!workspacePath && projectName !== 'General' && pathMap.has(projectName.toLowerCase())) {
         workspacePath = pathMap.get(projectName.toLowerCase());
+      }
+
+      if (
+        !projectName ||
+        projectName.includes('%') ||
+        projectName.includes('\n') ||
+        projectName.includes('..') ||
+        projectName.length > 40
+      ) {
+        if (workspacePath && fs.existsSync(workspacePath)) {
+          projectName = path.basename(workspacePath);
+        } else {
+          projectName = 'General';
+        }
       }
 
       const date = new Date(mtime || Date.now());

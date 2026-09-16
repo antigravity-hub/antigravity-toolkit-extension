@@ -157,7 +157,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     const activeHealth = activeAccount ? Math.round(this.accountService.getAccountHealth(activeAccount)) : 0;
     const isAutoOn = autoSwitchStatus.enabled;
     const extensionVersion =
-      vscode.extensions.getExtension('antigravity-hub.antigravity-toolkit')?.packageJSON?.version || '2.1.0';
+      vscode.extensions.getExtension('antigravity-hub.antigravity-toolkit')?.packageJSON?.version || '2.1.1';
 
     // Resolve Simplified Groups (Google Gemini & Anthropic Claude) matching Shield
     let geminiGroup: QuotaGroup | undefined;
