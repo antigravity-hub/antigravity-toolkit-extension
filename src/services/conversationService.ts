@@ -614,16 +614,16 @@ export class ConversationService {
     if (process.platform === 'win32') {
       try {
         const tempVbs = path.join(os.tmpdir(), `ag_paste_${Date.now()}.vbs`);
-        // Deliberately slowed down timing:
-        // 1. Wait 1200ms for the native picker UI and search input to render and focus.
+        // Generous step-by-step timing:
+        // 1. Wait 1800ms for the native picker UI and search input to render and take focus.
         // 2. Send Ctrl+V to paste the conversation title.
-        // 3. Wait 1500ms so the user can visually verify the pasted query and filtered list.
+        // 3. Wait 3000ms (3 full seconds) so the user can clearly see the pasted text and filtered list.
         // 4. Send Enter to select the top filtered conversation.
         const vbsContent = [
           'Set WshShell = CreateObject("WScript.Shell")',
-          'WScript.Sleep 1200',
+          'WScript.Sleep 1800',
           'WshShell.SendKeys "^v"',
-          'WScript.Sleep 1500',
+          'WScript.Sleep 3000',
           'WshShell.SendKeys "{ENTER}"',
         ].join('\r\n');
         fs.writeFileSync(tempVbs, vbsContent, 'utf8');
@@ -641,21 +641,21 @@ export class ConversationService {
           } catch {
             // ignore
           }
-        }, 8000);
+        }, 12000);
       } catch (err) {
         console.warn('[ConversationService] Windows SendKeys automation error:', err);
       }
     } else if (process.platform === 'darwin') {
       try {
         const script =
-          'delay 1.2\ntell application "System Events" to keystroke "v" using command down\ndelay 1.5\ntell application "System Events" to key code 36';
+          'delay 1.8\ntell application "System Events" to keystroke "v" using command down\ndelay 3.0\ntell application "System Events" to key code 36';
         child_process.exec(`osascript -e '${script}'`);
       } catch {
         // ignore
       }
     } else {
       try {
-        child_process.exec('sleep 1.2 && xdotool key ctrl+v && sleep 1.5 && xdotool key Return');
+        child_process.exec('sleep 1.8 && xdotool key ctrl+v && sleep 3.0 && xdotool key Return');
       } catch {
         // ignore
       }
@@ -737,7 +737,7 @@ export class ConversationService {
     }
 
     // Deliberate pause: let Chat panel render and settle
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise((r) => setTimeout(r, 1000));
 
     // 3. Copy verbatim title to clipboard (preserving Persian ZWNJ, full text, and symbols)
     if (cleanTitle) {
