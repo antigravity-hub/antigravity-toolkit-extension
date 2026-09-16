@@ -265,17 +265,7 @@ export function activate(context: vscode.ExtensionContext) {
               // ignore
             }
 
-            try {
-              await vscode.commands.executeCommand('antigravity.openConversationPicker');
-            } catch {
-              try {
-                await vscode.commands.executeCommand('openConversationPicker');
-              } catch {
-                // ignore
-              }
-            }
-
-            // Automatically paste and select in picker
+            // Automatically open with Ctrl+A, paste, navigate down, and select
             conversationService.automatePasteAndSelect(cleanTitle);
           }
         }
