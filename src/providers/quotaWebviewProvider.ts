@@ -406,14 +406,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       projectsMap.get(pName)!.push(conv);
     }
 
-    // Sort projects so CURRENT WORKSPACE is first!
+    // Sort projects so CURRENT WORKSPACE is first, followed by latest activity!
     const sortedProjectEntries = Array.from(projectsMap.entries()).sort(([nameA, sessionsA], [nameB, sessionsB]) => {
       const isCurrentA = currentWorkspaceName && nameA.toLowerCase() === currentWorkspaceName.toLowerCase();
       const isCurrentB = currentWorkspaceName && nameB.toLowerCase() === currentWorkspaceName.toLowerCase();
       if (isCurrentA && !isCurrentB) return -1;
       if (!isCurrentA && isCurrentB) return 1;
-      const latestA = sessionsA[0]?.updatedAt || 0;
-      const latestB = sessionsB[0]?.updatedAt || 0;
+      const latestA = Math.max(...sessionsA.map((s) => s.updatedAt || 0), 0);
+      const latestB = Math.max(...sessionsB.map((s) => s.updatedAt || 0), 0);
       return latestB - latestA;
     });
 
