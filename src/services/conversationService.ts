@@ -607,10 +607,10 @@ export class ConversationService {
   }
 
   /**
-   * Automates opening picker with Ctrl+A, pasting title, navigating down, and pressing Enter.
+   * Automates opening picker, pasting title, navigating down, and pressing Enter.
    * Uses hardware-level keybd_event to bypass OS keyboard layout restrictions (Persian, etc.).
    */
-  public automatePasteAndSelect(title: string): void {
+  public automatePasteAndSelect(title: string, needOpenShortcut: boolean = false): void {
     if (process.platform === 'win32') {
       try {
         const tempPs1 = path.join(os.tmpdir(), `ag_open_${Date.now()}.ps1`);
@@ -623,6 +623,7 @@ export class ConversationService {
           '    [DllImport("user32.dll")]',
           '    public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);',
           '    public const byte VK_CONTROL = 0x11;',
+          '    public const byte VK_SHIFT = 0x10;',
           '    public const byte VK_A = 0x41;',
           '    public const byte VK_V = 0x56;',
           '    public const byte VK_DOWN = 0x28;',
@@ -633,44 +634,48 @@ export class ConversationService {
           '        Thread.Sleep(50);',
           '        keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
           '    }',
-          '    public static void CtrlKey(byte vk) {',
+          '    public static void OpenPickerShortcut() {',
+          '        keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);',
+          '        keybd_event(VK_SHIFT, 0, 0, UIntPtr.Zero);',
+          '        Thread.Sleep(50);',
+          '        keybd_event(VK_A, 0, 0, UIntPtr.Zero);',
+          '        Thread.Sleep(50);',
+          '        keybd_event(VK_A, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
+          '        Thread.Sleep(50);',
+          '        keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
+          '        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
+          '    }',
+          '    public static void Paste() {',
           '        keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);',
           '        Thread.Sleep(50);',
-          '        keybd_event(vk, 0, 0, UIntPtr.Zero);',
+          '        keybd_event(VK_V, 0, 0, UIntPtr.Zero);',
           '        Thread.Sleep(50);',
-          '        keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
+          '        keybd_event(VK_V, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
           '        Thread.Sleep(50);',
           '        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
           '    }',
-          '    public static void CtrlA() { CtrlKey(VK_A); }',
-          '    public static void CtrlV() { CtrlKey(VK_V); }',
           '    public static void Down() { PressKey(VK_DOWN); }',
           '    public static void Enter() { PressKey(VK_RETURN); }',
           '}',
           '"@',
           '',
-          '# Step 1: Wait after chat focus',
-          'Start-Sleep -Milliseconds 600',
+          needOpenShortcut
+            ? '# Open picker via Ctrl+Shift+A\n[WinInput]::OpenPickerShortcut()\nStart-Sleep -Milliseconds 1500'
+            : '# Wait for picker to render & focus\nStart-Sleep -Milliseconds 1200',
           '',
-          '# Step 2: Open picker with Ctrl+A',
-          '[WinInput]::CtrlA()',
+          '# 1. Paste title with Ctrl+V',
+          '[WinInput]::Paste()',
           '',
-          '# Step 3: Wait for picker to render & focus search input',
-          'Start-Sleep -Milliseconds 1800',
+          '# 2. Generous pause to observe pasted text and filtered list',
+          'Start-Sleep -Milliseconds 2000',
           '',
-          '# Step 4: Paste title with Ctrl+V',
-          '[WinInput]::CtrlV()',
-          '',
-          '# Step 5: Generous pause to observe pasted text and filtered list',
-          'Start-Sleep -Milliseconds 2500',
-          '',
-          '# Step 6: Down Arrow to highlight the top search result',
+          '# 3. Down Arrow to highlight the top search result',
           '[WinInput]::Down()',
           '',
-          '# Step 7: Pause to observe highlighted item',
+          '# 4. Pause to observe highlighted item',
           'Start-Sleep -Milliseconds 1000',
           '',
-          '# Step 8: Enter to open the conversation',
+          '# 5. Enter to open the conversation',
           '[WinInput]::Enter()',
         ].join('\r\n');
         fs.writeFileSync(tempPs1, ps1Content, 'utf8');
@@ -698,16 +703,19 @@ export class ConversationService {
       }
     } else if (process.platform === 'darwin') {
       try {
-        const script =
-          'delay 0.6\ntell application "System Events" to keystroke "a" using command down\ndelay 1.8\ntell application "System Events" to keystroke "v" using command down\ndelay 2.5\ntell application "System Events" to key code 125\ndelay 1.0\ntell application "System Events" to key code 36';
+        const openCmd = needOpenShortcut
+          ? 'tell application "System Events" to keystroke "a" using {command down, shift down}\ndelay 1.5\n'
+          : 'delay 1.2\n';
+        const script = `${openCmd}tell application "System Events" to keystroke "v" using command down\ndelay 2.0\ntell application "System Events" to key code 125\ndelay 1.0\ntell application "System Events" to key code 36`;
         child_process.exec(`osascript -e '${script}'`);
       } catch {
         // ignore
       }
     } else {
       try {
+        const openCmd = needOpenShortcut ? 'xdotool key ctrl+shift+a && sleep 1.5 && ' : 'sleep 1.2 && ';
         child_process.exec(
-          'sleep 0.6 && xdotool key ctrl+a && sleep 1.8 && xdotool key ctrl+v && sleep 2.5 && xdotool key Down && sleep 1.0 && xdotool key Return'
+          `${openCmd}xdotool key ctrl+v && sleep 2.0 && xdotool key Down && sleep 1.0 && xdotool key Return`
         );
       } catch {
         // ignore
@@ -718,9 +726,9 @@ export class ConversationService {
   /**
    * Opens the conversation session in Antigravity IDE:
    * 1. If it belongs to a different project workspace, prompts smoothly to switch.
-   * 2. Focuses/opens the Antigravity Chat panel.
-   * 3. Copies the session title to the clipboard.
-   * 4. Automatically executes: Ctrl+A -> wait -> Paste -> wait -> Down Arrow -> wait -> Enter.
+   * 2. Copies the session title to the clipboard.
+   * 3. Launches Antigravity's Conversation Picker (antigravity.openConversationPicker / Ctrl+Shift+A).
+   * 4. Automatically executes: Paste -> wait -> Down Arrow -> wait -> Enter.
    */
   public async openConversation(session: ConversationSession): Promise<void> {
     const cleanTitle = session.title.replace(/[\r\n\t]+/g, ' ').trim();
@@ -782,8 +790,17 @@ export class ConversationService {
       await vscode.env.clipboard.writeText(cleanTitle);
     }
 
-    // 3. Automated execution: Ctrl+A -> wait -> Ctrl+V -> wait -> Down -> wait -> Enter (NO Ctrl+L!)
-    this.automatePasteAndSelect(cleanTitle);
+    // 3. Open Antigravity Conversation Picker
+    let pickerOpened = false;
+    try {
+      await vscode.commands.executeCommand('antigravity.openConversationPicker');
+      pickerOpened = true;
+    } catch (e) {
+      console.warn('[ConversationService] executeCommand failed, falling back to Ctrl+Shift+A keystroke', e);
+    }
+
+    // 4. Automated execution: (open shortcut if needed) -> wait -> Paste -> wait -> Down -> wait -> Enter
+    this.automatePasteAndSelect(cleanTitle, !pickerOpened);
   }
 
   /**

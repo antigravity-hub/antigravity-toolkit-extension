@@ -2288,30 +2288,30 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       const targetBtn = document.getElementById('btn-open-' + sessionId);
       if (targetBtn) {
         targetBtn.classList.add('btn-opening');
-        targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Opening (Ctrl+A)...';
+        targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Opening Picker...';
 
         setTimeout(() => {
           if (targetBtn.classList.contains('btn-opening')) {
             targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Pasting Title...';
           }
-        }, 2400);
+        }, 1500);
 
         setTimeout(() => {
           if (targetBtn.classList.contains('btn-opening')) {
             targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Selecting (↓)...';
           }
-        }, 4900);
+        }, 3600);
 
         setTimeout(() => {
           if (targetBtn.classList.contains('btn-opening')) {
             targetBtn.innerHTML = '<span class="node-btn-spinner"></span> Entering (↵)...';
           }
-        }, 5900);
+        }, 4800);
 
         setTimeout(() => {
           targetBtn.classList.remove('btn-opening');
           targetBtn.innerHTML = '<svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/></svg> <span>Open in Chat</span>';
-        }, 7500);
+        }, 6200);
       }
 
       // Post message to backend extension
