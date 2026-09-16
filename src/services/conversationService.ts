@@ -668,7 +668,7 @@ export class ConversationService {
   public async openConversation(session: ConversationSession): Promise<void> {
     const cleanTitle = session.title.replace(/[\r\n\t]+/g, ' ').trim();
 
-    // 1. If conversation belongs to another project, ask user or switch smoothly
+    // 1. If conversation belongs to another project, automatically open in a new window!
     const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (session.workspacePath && currentWorkspaceFolder && fs.existsSync(session.workspacePath)) {
       const normCurrent = path.normalize(currentWorkspaceFolder).toLowerCase();
@@ -678,51 +678,40 @@ export class ConversationService {
         !normCurrent.startsWith(normTarget + path.sep) &&
         !normTarget.startsWith(normCurrent + path.sep)
       ) {
-        const choice = await vscode.window.showInformationMessage(
-          `Conversation belongs to workspace "${session.projectName}". How would you like to open it?`,
-          'Open/Switch to Workspace',
-          'Open in Current Window',
-          'View Transcript File'
-        );
-        if (choice === 'Open/Switch to Workspace') {
-          // Store pending conversation state for the destination window
-          try {
-            const pendingFile = path.join(os.homedir(), '.gemini', 'pending_open_chat.json');
-            fs.writeFileSync(
-              pendingFile,
-              JSON.stringify({
-                sessionId: session.id,
-                title: session.title,
-                workspacePath: session.workspacePath,
-                timestamp: Date.now(),
-              }),
-              'utf8'
-            );
-          } catch {
-            // ignore
-          }
-
-          // Copy search query to clipboard (preserves Persian نیم‌فاصله \u200c)
-          const searchQuery = cleanTitle
-            .replace(/\.{3,}$/, '')
-            .replace(/[^\p{L}\p{N}\s\u200c\u200d]/gu, ' ')
-            .replace(/[ \t]+/g, ' ')
-            .trim()
-            .slice(0, 40);
-          if (searchQuery) {
-            await vscode.env.clipboard.writeText(searchQuery);
-          }
-
-          // Switch or open folder without forcing a duplicate blank window
-          const targetUri = vscode.Uri.file(session.workspacePath);
-          await vscode.commands.executeCommand('vscode.openFolder', targetUri, { forceNewWindow: false });
-          return;
-        } else if (choice === 'View Transcript File') {
-          await this.openTranscript(session);
-          return;
-        } else if (!choice) {
-          return;
+        // Store pending conversation state for the destination window
+        try {
+          const pendingFile = path.join(os.homedir(), '.gemini', 'pending_open_chat.json');
+          fs.writeFileSync(
+            pendingFile,
+            JSON.stringify({
+              sessionId: session.id,
+              title: session.title,
+              workspacePath: session.workspacePath,
+              timestamp: Date.now(),
+            }),
+            'utf8'
+          );
+        } catch {
+          // ignore
         }
+
+        // Copy search query to clipboard (preserves Persian نیم‌فاصله \u200c)
+        const searchQuery = cleanTitle
+          .replace(/\.{3,}$/, '')
+          .replace(/[^\p{L}\p{N}\s\u200c\u200d]/gu, ' ')
+          .replace(/[ \t]+/g, ' ')
+          .trim()
+          .slice(0, 40);
+        if (searchQuery) {
+          await vscode.env.clipboard.writeText(searchQuery);
+        }
+
+        vscode.window.setStatusBarMessage(`$(folder) Opening "${session.projectName}" in new window...`, 4000);
+
+        // Open the destination project in a new window autonomously!
+        const targetUri = vscode.Uri.file(session.workspacePath);
+        await vscode.commands.executeCommand('vscode.openFolder', targetUri, { forceNewWindow: true });
+        return;
       }
     }
 
