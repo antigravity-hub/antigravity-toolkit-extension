@@ -246,7 +246,9 @@ export function activate(context: vscode.ExtensionContext) {
       const pendingFile = path.join(os.homedir(), '.gemini', 'pending_open_chat.json');
       if (fs.existsSync(pendingFile)) {
         const raw = fs.readFileSync(pendingFile, 'utf8');
-        fs.unlinkSync(pendingFile);
+        try {
+          fs.unlinkSync(pendingFile);
+        } catch {}
         const data = JSON.parse(raw);
         if (data && data.title && Date.now() - (data.timestamp || 0) < 60000) {
           const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -255,19 +257,33 @@ export function activate(context: vscode.ExtensionContext) {
             !currentWorkspaceFolder ||
             path.normalize(currentWorkspaceFolder).toLowerCase() === path.normalize(data.workspacePath).toLowerCase()
           ) {
-            console.log(`[Antigravity Toolkit] Activating pending conversation "${data.title}"...`);
+            console.log(`[Antigravity Toolkit] Activating pending conversation "${data.title}" in new workspace...`);
             const cleanTitle = String(data.title).replace(/[\r\n\t]+/g, ' ').trim();
-            await vscode.env.clipboard.writeText(cleanTitle);
+            const searchQuery = cleanTitle
+              .replace(/\.{3,}$/, '')
+              .replace(/[^\p{L}\p{N}\s\u200c\u200d]/gu, ' ')
+              .replace(/[ \t]+/g, ' ')
+              .trim()
+              .slice(0, 40);
 
-            // Automatically open with Ctrl+A, paste, navigate down, and select (NO Ctrl+L!)
-            conversationService.automatePasteAndSelect(cleanTitle);
+            if (searchQuery) {
+              await vscode.env.clipboard.writeText(searchQuery);
+            }
+
+            // Launch automation concurrently in background
+            conversationService.automatePasteAndSelect(searchQuery);
+
+            // Open Antigravity's native Conversation Picker in the newly opened window
+            vscode.commands.executeCommand('antigravity.openConversationPicker').then(undefined, () => {
+              vscode.commands.executeCommand('openConversationPicker').then(undefined, () => {});
+            });
           }
         }
       }
     } catch (e) {
       console.warn('[Antigravity Toolkit] Error handling pending chat:', e);
     }
-  }, 1200);
+  }, 2200);
 
   console.log('[Antigravity Toolkit 2.0] Activated successfully.');
 }
