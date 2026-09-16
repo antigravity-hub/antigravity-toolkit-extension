@@ -397,6 +397,9 @@ export class ShieldBridge {
 
     let handledByShield = false;
 
+    // Always update local disk configuration FIRST for instant synchronization
+    this.syncDiskCredentials(email, targetUuid);
+
     for (const ep of endpoints) {
       try {
         const statusCode = await new Promise<number>((resolve) => {
@@ -438,7 +441,14 @@ export class ShieldBridge {
       }
     }
 
-    // Always update local disk configuration for instant synchronization
+    return { success: true, handledByShield };
+  }
+
+  /**
+   * Directly updates local disk configurations (accounts.json, google_accounts.json, oauth_creds.json)
+   * immediately before triggering Language Server RegisterGdmUser.
+   */
+  public syncDiskCredentials(email: string, targetUuid?: string): boolean {
     try {
       const home = os.homedir();
       const shieldDir = path.join(home, '.antigravity_shield');
@@ -446,7 +456,7 @@ export class ShieldBridge {
       if (fs.existsSync(accountsJsonPath)) {
         const index = JSON.parse(fs.readFileSync(accountsJsonPath, 'utf8'));
         const target = index.accounts.find(
-          (a: any) => a.email.toLowerCase() === email.toLowerCase() || a.id === targetUuid
+          (a: any) => a.email.toLowerCase() === email.toLowerCase() || (targetUuid && a.id === targetUuid)
         );
         if (target) {
           index.active_ide_account_id = target.id;
@@ -479,13 +489,13 @@ export class ShieldBridge {
               fs.writeFileSync(credsPath, JSON.stringify(credsData, null, 2), 'utf8');
             }
           }
+          return true;
         }
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.warn('[ShieldBridge] Error syncing disk credentials:', err);
     }
-
-    return { success: true, handledByShield };
+    return false;
   }
 
   /**
@@ -566,7 +576,9 @@ export class ShieldBridge {
                 try {
                   const json = JSON.parse(resData);
                   if (json && json.command && this.commandHandler) {
-                    this.commandHandler(json.command);
+                    Promise.resolve(this.commandHandler(json.command)).catch((err) => {
+                      console.error('[ShieldBridge] Error in commandHandler from heartbeat:', err);
+                    });
                   }
                 } catch {
                   // ignore
@@ -602,6 +614,14 @@ export class ShieldBridge {
     if (this.isPollingCommands) return;
     this.isPollingCommands = true;
     this.pollCommandsLoop();
+  }
+
+  /**
+   * Gracefully terminates the long-polling loop and releases listener callback.
+   */
+  public stopCommandListener(): void {
+    this.isPollingCommands = false;
+    this.commandHandler = null;
   }
 
   private async pollCommandsLoop(): Promise<void> {

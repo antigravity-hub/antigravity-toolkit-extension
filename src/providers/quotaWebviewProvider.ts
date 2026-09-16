@@ -40,7 +40,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
         case 'refresh':
+          await this.accountService.reloadFromDiskSilently();
           this.quotaService.notifyQuotasUpdated();
+          await this.autoSwitchService.evaluateQuotasAndRotateIfNeeded();
           break;
         case 'switchAccount':
           if (message.email) {
@@ -157,7 +159,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     const activeHealth = activeAccount ? Math.round(this.accountService.getAccountHealth(activeAccount)) : 0;
     const isAutoOn = autoSwitchStatus.enabled;
     const extensionVersion =
-      vscode.extensions.getExtension('antigravity-hub.antigravity-toolkit')?.packageJSON?.version || '2.1.1';
+      vscode.extensions.getExtension('antigravity-hub.antigravity-toolkit')?.packageJSON?.version || '2.3.0';
 
     // Resolve Simplified Groups (Google Gemini & Anthropic Claude) matching Shield
     let geminiGroup: QuotaGroup | undefined;

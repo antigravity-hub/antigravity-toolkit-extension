@@ -7,6 +7,7 @@ import { QuotaService } from './services/quotaService';
 import { ConversationService } from './services/conversationService';
 import { AutoSwitchService } from './services/autoSwitchService';
 import { NetworkWatchdogService } from './services/networkWatchdogService';
+import { ShieldWatcherService } from './services/shieldWatcherService';
 import { AccountTreeProvider } from './providers/accountTreeProvider';
 import { HistoryTreeProvider } from './providers/historyTreeProvider';
 import { QuotaWebviewProvider } from './providers/quotaWebviewProvider';
@@ -26,8 +27,10 @@ export function activate(context: vscode.ExtensionContext) {
   const conversationService = ConversationService.getInstance();
   const autoSwitchService = AutoSwitchService.initialize(accountService, quotaService);
   const networkWatchdog = NetworkWatchdogService.initialize();
+  const shieldWatcher = ShieldWatcherService.initialize(accountService, quotaService, autoSwitchService);
 
   context.subscriptions.push(networkWatchdog);
+  context.subscriptions.push(shieldWatcher);
   context.subscriptions.push({ dispose: () => autoSwitchService.dispose() });
 
   // 2. Initialize Webview Provider (Single Unified View)
@@ -204,14 +207,22 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // 5. Setup Background Polling Timer for Quotas
+  // 5. Setup Background Polling Timer for Quotas (Silent real-time re-hydration)
   const config = vscode.workspace.getConfiguration('antigravityToolkit');
-  const intervalSeconds = config.get<number>('quotaRefreshIntervalSeconds', 60);
-  if (intervalSeconds > 0) {
-    quotaIntervalTimer = setInterval(() => {
-      quotaService.notifyQuotasUpdated();
-    }, intervalSeconds * 1000);
-  }
+  const intervalSeconds = config.get<number>('quotaRefreshIntervalSeconds', 30);
+  const pollIntervalMs = Math.max(15, intervalSeconds > 0 ? intervalSeconds : 30) * 1000;
+
+  quotaIntervalTimer = setInterval(async () => {
+    try {
+      const changed = await accountService.reloadFromDiskSilently();
+      if (changed) {
+        quotaService.notifyQuotasUpdated();
+        await autoSwitchService.evaluateQuotasAndRotateIfNeeded();
+      }
+    } catch (e) {
+      console.warn('[Antigravity Toolkit] Background quota sync error:', e);
+    }
+  }, pollIntervalMs);
 
   // 6. Proactive Heartbeat & Background Sync to Shield (1.5s interval for fast command pickup)
   const shieldBridge = ShieldBridge.getInstance();
@@ -227,7 +238,7 @@ export function activate(context: vscode.ExtensionContext) {
     accountService.syncFromShield().catch(() => {});
   }, 2000);
 
-  // 7. Full-Duplex Two-Way Tunnel Listener (Shield -> IDE Zero-Reload Switch)
+  // 7. Full-Duplex Two-Way Tunnel Listener (Shield -> IDE Zero-Reload Switch & Quota Updates)
   shieldBridge.startCommandListener(async (cmd) => {
     if (cmd && cmd.action === 'switch_account' && cmd.email) {
       console.log(`[Toolkit Tunnel] Received switch command for ${cmd.email} from Shield!`);
@@ -237,6 +248,11 @@ export function activate(context: vscode.ExtensionContext) {
       } catch {
         // switchboard might not be active, safe to ignore
       }
+    } else if (cmd && (cmd.action === 'quota_updated' || cmd.action === 'refresh_quotas')) {
+      console.log(`[Toolkit Tunnel] Received ${cmd.action} event from Shield! Auto-reloading...`);
+      await accountService.reloadFromDiskSilently();
+      quotaService.notifyQuotasUpdated();
+      await autoSwitchService.evaluateQuotasAndRotateIfNeeded();
     }
   });
 
@@ -317,4 +333,5 @@ export function deactivate() {
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
   }
+  ShieldBridge.getInstance().stopCommandListener();
 }

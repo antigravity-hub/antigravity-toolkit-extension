@@ -333,12 +333,19 @@ export class AccountService {
         g.displayName.toLowerCase().includes('gemini')
       );
       if (geminiGroup) {
-        if (geminiGroup.fiveHourBucket && typeof geminiGroup.fiveHourBucket.remainingPercentage === 'number') {
-          return geminiGroup.fiveHourBucket.remainingPercentage;
+        const fiveH = geminiGroup.fiveHourBucket && typeof geminiGroup.fiveHourBucket.remainingPercentage === 'number'
+          ? geminiGroup.fiveHourBucket.remainingPercentage
+          : undefined;
+        const weekly = geminiGroup.weeklyBucket && typeof geminiGroup.weeklyBucket.remainingPercentage === 'number'
+          ? geminiGroup.weeklyBucket.remainingPercentage
+          : undefined;
+
+        if (fiveH !== undefined && weekly !== undefined) {
+          // If either window is exhausted (<= 0), overall health is the limiting window
+          return Math.min(fiveH, weekly);
         }
-        if (geminiGroup.weeklyBucket && typeof geminiGroup.weeklyBucket.remainingPercentage === 'number') {
-          return geminiGroup.weeklyBucket.remainingPercentage;
-        }
+        if (fiveH !== undefined) return fiveH;
+        if (weekly !== undefined) return weekly;
       }
     }
 
@@ -399,6 +406,49 @@ export class AccountService {
     }
 
     return null;
+  }
+
+  /**
+   * Pulls fresh accounts from Antigravity Shield silently without showing notifications.
+   * Preserves the active account and updates UI emitters.
+   */
+  public async reloadFromDiskSilently(): Promise<boolean> {
+    try {
+      const shield = ShieldBridge.getInstance();
+      let fetched = shield.loadAccountsFromLocalDisk();
+      if (fetched.length === 0) {
+        fetched = await shield.fetchShieldAccounts();
+      }
+
+      if (fetched.length === 0) {
+        return false;
+      }
+
+      const currentActive = this.activeEmail;
+      const activeExists = currentActive && fetched.some((a) => a.email.toLowerCase() === currentActive.toLowerCase());
+
+      this.accounts.clear();
+      for (const acc of fetched) {
+        if (activeExists) {
+          acc.isActive = (acc.email.toLowerCase() === currentActive.toLowerCase());
+        }
+        this.accounts.set(acc.email, acc);
+        if (acc.isActive) {
+          this.activeEmail = acc.email;
+        }
+      }
+
+      if (!this.activeEmail && fetched.length > 0) {
+        this.activeEmail = fetched[0].email;
+        fetched[0].isActive = true;
+      }
+
+      await this.persistAccounts();
+      return true;
+    } catch (err) {
+      console.warn('[AccountService] Failed to reload accounts silently:', err);
+      return false;
+    }
   }
 
   /**

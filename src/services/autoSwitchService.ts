@@ -130,31 +130,37 @@ export class AutoSwitchService {
       }
 
       // Determine if active session has reached critical depletion:
-      // 1. Any primary model has <= threshold remaining quota
-      // 2. OR 5-hour rolling window has <= 2% time remaining (< 6 minutes) and high usage
-      // 3. OR remaining quota is 0 (exhausted)
+      // 1. Overall active account health <= threshold (e.g. 5h limit or weekly exhausted)
+      // 2. Any primary model has <= threshold remaining quota
+      // 3. OR 5-hour rolling window has <= 2% time remaining (< 6 minutes) and high usage
       let isCritical = false;
       let criticalReason = '';
 
-      for (const q of quotas) {
-        const remaining = Math.max(0, 100 - q.usagePercentage);
-        if (remaining <= threshold) {
-          isCritical = true;
-          criticalReason = `${q.displayName} quota exhausted (${remaining}% left)`;
-          break;
-        }
-
-        // Rolling 5-hour window duration remaining check
-        if (q.windowType === 'rolling_5h' && q.resetTimeMs > 0) {
-          const timeRemainingMs = Math.max(0, q.resetTimeMs - now);
-          // 2% of 5 hours is 6 minutes (360,000 ms)
-          const fiveHoursMs = 5 * 60 * 60 * 1000;
-          const timePercent = (timeRemainingMs / fiveHoursMs) * 100;
-
-          if (timePercent <= 2 && remaining < 15) {
+      const activeHealth = this.accountService.getAccountHealth(activeAccount);
+      if (activeHealth <= threshold) {
+        isCritical = true;
+        criticalReason = `Account quota health depleted (${activeHealth}% remaining)`;
+      } else {
+        for (const q of quotas) {
+          const remaining = typeof q.remainingQuota === 'number' ? q.remainingQuota : Math.max(0, 100 - q.usagePercentage);
+          if (remaining <= threshold) {
             isCritical = true;
-            criticalReason = `${q.displayName} 5-hour window expiring (${Math.round(timeRemainingMs / 60000)}m left, ${remaining}% quota)`;
+            criticalReason = `${q.displayName} quota exhausted (${remaining}% left)`;
             break;
+          }
+
+          // Rolling 5-hour window duration remaining check
+          if (q.windowType === 'rolling_5h' && q.resetTimeMs > 0) {
+            const timeRemainingMs = Math.max(0, q.resetTimeMs - now);
+            // 2% of 5 hours is 6 minutes (360,000 ms)
+            const fiveHoursMs = 5 * 60 * 60 * 1000;
+            const timePercent = (timeRemainingMs / fiveHoursMs) * 100;
+
+            if (timePercent <= 2 && remaining < 15) {
+              isCritical = true;
+              criticalReason = `${q.displayName} 5-hour window expiring (${Math.round(timeRemainingMs / 60000)}m left, ${remaining}% quota)`;
+              break;
+            }
           }
         }
       }
