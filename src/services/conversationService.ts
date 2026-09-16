@@ -507,108 +507,6 @@ export class ConversationService {
       });
     }
 
-    // 2. RECENT SESSIONS FALLBACK (Only for chats created in the last 60 minutes not yet flushed to SQLite)
-    for (const brainDir of brainDirs) {
-      try {
-        if (!fs.existsSync(brainDir)) continue;
-        const entries = fs.readdirSync(brainDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          if (entry.name.startsWith('.') || entry.name.toLowerCase().includes('tempmedia')) continue;
-          if (seenIds.has(entry.name)) continue;
-
-          const convId = entry.name;
-          const sessionDir = path.join(brainDir, convId);
-          const logsDir = path.join(sessionDir, '.system_generated', 'logs');
-          const compact = path.join(logsDir, 'transcript.jsonl');
-          const full = path.join(logsDir, 'transcript_full.jsonl');
-          const tPath = fs.existsSync(compact) ? compact : fs.existsSync(full) ? full : '';
-          if (!tPath) continue;
-
-          let stat: fs.Stats;
-          try {
-            stat = fs.statSync(tPath);
-          } catch {
-            continue;
-          }
-
-          if (now - stat.mtimeMs > 60 * 60 * 1000) {
-            continue;
-          }
-
-          let content = '';
-          try {
-            content = fs.readFileSync(tPath, 'utf8');
-          } catch {
-            continue;
-          }
-          const lines = content.split('\n').filter((l) => l.trim().length > 0);
-          if (lines.length === 0) continue;
-
-          let previewText = '';
-          for (const line of lines.slice(0, 25)) {
-            try {
-              const obj = JSON.parse(line);
-              if (obj.type === 'USER_INPUT' && obj.content) {
-                let raw = String(obj.content);
-                const reqMatch = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
-                if (reqMatch && reqMatch[1]) raw = reqMatch[1];
-                previewText = raw.replace(/<[^>]+>/g, '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 90);
-                break;
-              }
-            } catch {}
-          }
-
-          if (isSubagentText(previewText)) continue;
-
-          let planTitle = '';
-          const planFile = path.join(sessionDir, 'implementation_plan.md');
-          if (fs.existsSync(planFile)) {
-            try {
-              const head = fs.readFileSync(planFile, 'utf8').split('\n')[0] || '';
-              if (head.startsWith('#')) planTitle = this.sanitizeTitle(head);
-            } catch {}
-          }
-
-          const finalTitle = planTitle || (previewText ? this.sanitizeTitle(previewText) : `Session ${convId.slice(0, 8)}`);
-          if (isSubagentText(finalTitle)) continue;
-
-          seenIds.add(convId);
-          const stepCount = lines.length;
-          const tokenEstimate = Math.round(content.length / 3.8);
-
-          let projectName = 'General';
-          let workspacePath: string | undefined;
-          if (vscode.workspace.workspaceFolders?.[0]) {
-            workspacePath = vscode.workspace.workspaceFolders[0].uri.fsPath;
-            projectName = vscode.workspace.name || path.basename(workspacePath);
-          }
-
-          const date = new Date(stat.mtimeMs);
-          const dateFormatted = date.toLocaleDateString(undefined, {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-          });
-
-          sessions.push({
-            id: convId,
-            title: finalTitle,
-            createdAt: stat.mtimeMs,
-            updatedAt: stat.mtimeMs,
-            dateFormatted,
-            transcriptPath: tPath,
-            stepCount,
-            previewText,
-            projectName,
-            workspacePath,
-            tokenEstimate,
-          });
-        }
-      } catch {}
-    }
-
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
     this.cachedSessions = sessions;
     this.lastSessionsScan = now;
@@ -647,35 +545,38 @@ export class ConversationService {
 
   /**
    * Automates pasting the conversation title, moving down to select, and pressing Enter in the picker.
-   * Rock-solid, lightweight native Windows script host with clear pauses between each step.
+   * Lightweight native Windows GUI script host with fast, calibrated pauses.
    */
   public automatePasteAndSelect(title: string): void {
     if (process.platform === 'win32') {
       try {
         const tempVbs = path.join(os.tmpdir(), `ag_select_${Date.now()}.vbs`);
-        // Deliberate step-by-step automation:
-        // 1. Wait 1000ms for the native picker UI and search input to render and take focus.
-        // 2. Send Ctrl+V to paste the conversation title into the search box.
-        // 3. Wait 1800ms so the user can clearly observe the pasted title and filtered list.
+        // Fast, reliable step-by-step automation:
+        // 1. Wait 500ms for the native picker UI and search input to render.
+        // 2. Send Ctrl+V and Shift+Insert to paste the title into the search box.
+        // 3. Wait 900ms for fuzzy search filtering.
         // 4. Send Down Arrow to highlight the top filtered conversation.
-        // 5. Wait 1000ms to observe the item highlighted.
+        // 5. Wait 500ms.
         // 6. Send Enter to select and open the conversation.
-        // 7. Send Enter once more after 250ms as a reinforcing commit in case VS Code QuickPick held focus on input.
         const vbsContent = [
           'Set WshShell = CreateObject("WScript.Shell")',
-          'WScript.Sleep 1000',
-          'WshShell.SendKeys "^v"',
-          'WScript.Sleep 1800',
-          'WshShell.SendKeys "{DOWN}"',
-          'WScript.Sleep 1000',
-          'WshShell.SendKeys "{ENTER}"',
-          'WScript.Sleep 250',
-          'WshShell.SendKeys "{ENTER}"',
           'WScript.Sleep 500',
+          'WshShell.SendKeys "^a"',
+          'WScript.Sleep 50',
+          'WshShell.SendKeys "^v"',
+          'WScript.Sleep 50',
+          'WshShell.SendKeys "+{INSERT}"',
+          'WScript.Sleep 900',
+          'WshShell.SendKeys "{DOWN}"',
+          'WScript.Sleep 500',
+          'WshShell.SendKeys "{ENTER}"',
+          'WScript.Sleep 200',
+          'WshShell.SendKeys "{ENTER}"',
+          'WScript.Sleep 300',
         ].join('\r\n');
         fs.writeFileSync(tempVbs, vbsContent, 'utf8');
 
-        const proc = child_process.spawn('cscript.exe', ['//Nologo', tempVbs], {
+        const proc = child_process.spawn('wscript.exe', ['//Nologo', tempVbs], {
           windowsHide: true,
           detached: true,
           stdio: 'ignore',
@@ -688,14 +589,14 @@ export class ConversationService {
           } catch {
             // ignore
           }
-        }, 12000);
+        }, 10000);
       } catch (err) {
         console.warn('[ConversationService] Windows SendKeys automation error:', err);
       }
     } else if (process.platform === 'darwin') {
       try {
         const script =
-          'delay 1.0\ntell application "System Events" to keystroke "v" using command down\ndelay 1.8\ntell application "System Events" to key code 125\ndelay 1.0\ntell application "System Events" to key code 36\ndelay 0.25\ntell application "System Events" to key code 36';
+          'delay 0.5\ntell application "System Events" to keystroke "v" using command down\ndelay 0.9\ntell application "System Events" to key code 125\ndelay 0.5\ntell application "System Events" to key code 36\ndelay 0.2\ntell application "System Events" to key code 36';
         child_process.exec(`osascript -e '${script}'`);
       } catch {
         // ignore
@@ -703,7 +604,7 @@ export class ConversationService {
     } else {
       try {
         child_process.exec(
-          'sleep 1.0 && xdotool key ctrl+v && sleep 1.8 && xdotool key Down && sleep 1.0 && xdotool key Return && sleep 0.25 && xdotool key Return'
+          'sleep 0.5 && xdotool key ctrl+v && sleep 0.9 && xdotool key Down && sleep 0.5 && xdotool key Return && sleep 0.2 && xdotool key Return'
         );
       } catch {
         // ignore
