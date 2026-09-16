@@ -37,8 +37,42 @@ export class ShieldBridge {
       return configured;
     }
 
-    // Auto-detect between 8045 (standard Shield port) and 8765 (bridge port)
-    for (const candidate of ['http://127.0.0.1:8045', 'http://127.0.0.1:8765']) {
+    // 1. First, check ~/.antigravity_shield/bridge_info.json for active dynamic port
+    try {
+      const home = os.homedir();
+      const infoPath = path.join(home, '.antigravity_shield', 'bridge_info.json');
+      if (fs.existsSync(infoPath)) {
+        const raw = fs.readFileSync(infoPath, 'utf8');
+        const info = JSON.parse(raw);
+        if (info && info.port) {
+          const candidate = `http://127.0.0.1:${info.port}`;
+          const ok = await this.pingUrl(new URL('/api/health', candidate));
+          if (ok) {
+            this.detectedBaseUrl = candidate;
+            return candidate;
+          }
+        }
+        if (info && info.companion_port) {
+          const candidate = `http://127.0.0.1:${info.companion_port}`;
+          const ok = await this.pingUrl(new URL('/api/health', candidate));
+          if (ok) {
+            this.detectedBaseUrl = candidate;
+            return candidate;
+          }
+        }
+      }
+    } catch {
+      // ignore and proceed to candidate list
+    }
+
+    // 2. Auto-detect between candidate ports
+    for (const candidate of [
+      'http://127.0.0.1:8045',
+      'http://127.0.0.1:8765',
+      'http://127.0.0.1:8046',
+      'http://127.0.0.1:8047',
+      'http://127.0.0.1:8766',
+    ]) {
       try {
         const ok = await this.pingUrl(new URL('/api/health', candidate));
         if (ok) {
@@ -62,16 +96,21 @@ export class ShieldBridge {
       const isOnline = await this.pingUrl(url);
       if (isOnline) return true;
     } catch {
-      // continue to local check
+      // ignore
     }
 
-    try {
-      const home = os.homedir();
-      const shieldDir = path.join(home, '.antigravity_shield');
-      return fs.existsSync(shieldDir);
-    } catch {
-      return false;
+    // Also check loopback toolkit status endpoint
+    for (const port of [8765, 8045, 8046, 8766]) {
+      try {
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/toolkit/status`));
+        if (isOnline) {
+          this.detectedBaseUrl = `http://127.0.0.1:${port}`;
+          return true;
+        }
+      } catch {}
     }
+
+    return false;
   }
 
   private fetchFromUrl(url: URL): Promise<Account[]> {
@@ -487,13 +526,27 @@ export class ShieldBridge {
       headers['Authorization'] = `Bearer ${apiKey}`;
     }
 
-    const targets = [
-      { port: 8765, path: '/api/toolkit/heartbeat' },
-      { port: 8045, path: '/api/toolkit/heartbeat' },
-      { port: 8765, path: '/toolkit/heartbeat' },
-      { port: 8045, path: '/toolkit/heartbeat' },
-      { port: 19527, path: '/api/toolkit/heartbeat' },
-    ];
+    // Read bridge_info.json if available for dynamic port discovery
+    const dynamicPorts: number[] = [];
+    try {
+      const home = os.homedir();
+      const infoPath = path.join(home, '.antigravity_shield', 'bridge_info.json');
+      if (fs.existsSync(infoPath)) {
+        const raw = fs.readFileSync(infoPath, 'utf8');
+        const info = JSON.parse(raw);
+        if (info?.port) dynamicPorts.push(info.port);
+        if (info?.companion_port) dynamicPorts.push(info.companion_port);
+      }
+    } catch {
+      // ignore
+    }
+
+    const targetPorts = Array.from(new Set([...dynamicPorts, 8765, 8045, 8046, 8047, 8766, 19527]));
+    const targets: { port: number; path: string }[] = [];
+    for (const p of targetPorts) {
+      targets.push({ port: p, path: '/api/toolkit/heartbeat' });
+      targets.push({ port: p, path: '/toolkit/heartbeat' });
+    }
 
     for (const target of targets) {
       try {
