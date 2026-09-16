@@ -607,115 +607,60 @@ export class ConversationService {
   }
 
   /**
-   * Automates opening picker, pasting title, navigating down, and pressing Enter.
-   * Uses hardware-level keybd_event to bypass OS keyboard layout restrictions (Persian, etc.).
+   * Automates pasting the conversation title, moving down to select, and pressing Enter in the picker.
+   * Rock-solid, lightweight native Windows script host with clear pauses between each step.
    */
-  public automatePasteAndSelect(title: string, needOpenShortcut: boolean = false): void {
+  public automatePasteAndSelect(title: string): void {
     if (process.platform === 'win32') {
       try {
-        const tempPs1 = path.join(os.tmpdir(), `ag_open_${Date.now()}.ps1`);
-        const ps1Content = [
-          'Add-Type -TypeDefinition @"',
-          'using System;',
-          'using System.Threading;',
-          'using System.Runtime.InteropServices;',
-          'public class WinInput {',
-          '    [DllImport("user32.dll")]',
-          '    public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);',
-          '    public const byte VK_CONTROL = 0x11;',
-          '    public const byte VK_SHIFT = 0x10;',
-          '    public const byte VK_A = 0x41;',
-          '    public const byte VK_V = 0x56;',
-          '    public const byte VK_DOWN = 0x28;',
-          '    public const byte VK_RETURN = 0x0D;',
-          '    public const uint KEYEVENTF_KEYUP = 0x0002;',
-          '    public static void PressKey(byte vk) {',
-          '        keybd_event(vk, 0, 0, UIntPtr.Zero);',
-          '        Thread.Sleep(50);',
-          '        keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
-          '    }',
-          '    public static void OpenPickerShortcut() {',
-          '        keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);',
-          '        keybd_event(VK_SHIFT, 0, 0, UIntPtr.Zero);',
-          '        Thread.Sleep(50);',
-          '        keybd_event(VK_A, 0, 0, UIntPtr.Zero);',
-          '        Thread.Sleep(50);',
-          '        keybd_event(VK_A, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
-          '        Thread.Sleep(50);',
-          '        keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
-          '        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
-          '    }',
-          '    public static void Paste() {',
-          '        keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);',
-          '        Thread.Sleep(50);',
-          '        keybd_event(VK_V, 0, 0, UIntPtr.Zero);',
-          '        Thread.Sleep(50);',
-          '        keybd_event(VK_V, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
-          '        Thread.Sleep(50);',
-          '        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);',
-          '    }',
-          '    public static void Down() { PressKey(VK_DOWN); }',
-          '    public static void Enter() { PressKey(VK_RETURN); }',
-          '}',
-          '"@',
-          '',
-          needOpenShortcut
-            ? '# Open picker via Ctrl+Shift+A\n[WinInput]::OpenPickerShortcut()\nStart-Sleep -Milliseconds 1500'
-            : '# Wait for picker to render & focus\nStart-Sleep -Milliseconds 1200',
-          '',
-          '# 1. Paste title with Ctrl+V',
-          '[WinInput]::Paste()',
-          '',
-          '# 2. Generous pause to observe pasted text and filtered list',
-          'Start-Sleep -Milliseconds 2000',
-          '',
-          '# 3. Down Arrow to highlight the top search result',
-          '[WinInput]::Down()',
-          '',
-          '# 4. Pause to observe highlighted item',
-          'Start-Sleep -Milliseconds 1000',
-          '',
-          '# 5. Enter to open the conversation',
-          '[WinInput]::Enter()',
+        const tempVbs = path.join(os.tmpdir(), `ag_select_${Date.now()}.vbs`);
+        // Deliberate step-by-step automation:
+        // 1. Wait 900ms for the native picker UI and search input to render and take focus.
+        // 2. Send Ctrl+V to paste the conversation title into the search box.
+        // 3. Wait 1800ms so the user can clearly observe the pasted title and filtered list.
+        // 4. Send Down Arrow to highlight the top filtered conversation.
+        // 5. Wait 900ms to observe the item highlighted.
+        // 6. Send Enter to select and open the conversation.
+        const vbsContent = [
+          'Set WshShell = CreateObject("WScript.Shell")',
+          'WScript.Sleep 900',
+          'WshShell.SendKeys "^v"',
+          'WScript.Sleep 1800',
+          'WshShell.SendKeys "{DOWN}"',
+          'WScript.Sleep 900',
+          'WshShell.SendKeys "{ENTER}"',
         ].join('\r\n');
-        fs.writeFileSync(tempPs1, ps1Content, 'utf8');
+        fs.writeFileSync(tempVbs, vbsContent, 'utf8');
 
-        const proc = child_process.spawn(
-          'powershell.exe',
-          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', tempPs1],
-          {
-            windowsHide: true,
-            detached: true,
-            stdio: 'ignore',
-          }
-        );
+        const proc = child_process.spawn('cscript.exe', ['//Nologo', tempVbs], {
+          windowsHide: true,
+          detached: true,
+          stdio: 'ignore',
+        });
         proc.unref();
 
         setTimeout(() => {
           try {
-            if (fs.existsSync(tempPs1)) fs.unlinkSync(tempPs1);
+            if (fs.existsSync(tempVbs)) fs.unlinkSync(tempVbs);
           } catch {
             // ignore
           }
-        }, 15000);
+        }, 10000);
       } catch (err) {
-        console.warn('[ConversationService] Windows PowerShell automation error:', err);
+        console.warn('[ConversationService] Windows SendKeys automation error:', err);
       }
     } else if (process.platform === 'darwin') {
       try {
-        const openCmd = needOpenShortcut
-          ? 'tell application "System Events" to keystroke "a" using {command down, shift down}\ndelay 1.5\n'
-          : 'delay 1.2\n';
-        const script = `${openCmd}tell application "System Events" to keystroke "v" using command down\ndelay 2.0\ntell application "System Events" to key code 125\ndelay 1.0\ntell application "System Events" to key code 36`;
+        const script =
+          'delay 0.9\ntell application "System Events" to keystroke "v" using command down\ndelay 1.8\ntell application "System Events" to key code 125\ndelay 0.9\ntell application "System Events" to key code 36';
         child_process.exec(`osascript -e '${script}'`);
       } catch {
         // ignore
       }
     } else {
       try {
-        const openCmd = needOpenShortcut ? 'xdotool key ctrl+shift+a && sleep 1.5 && ' : 'sleep 1.2 && ';
         child_process.exec(
-          `${openCmd}xdotool key ctrl+v && sleep 2.0 && xdotool key Down && sleep 1.0 && xdotool key Return`
+          'sleep 0.9 && xdotool key ctrl+v && sleep 1.8 && xdotool key Down && sleep 0.9 && xdotool key Return'
         );
       } catch {
         // ignore
@@ -727,7 +672,7 @@ export class ConversationService {
    * Opens the conversation session in Antigravity IDE:
    * 1. If it belongs to a different project workspace, prompts smoothly to switch.
    * 2. Copies the session title to the clipboard.
-   * 3. Launches Antigravity's Conversation Picker (antigravity.openConversationPicker / Ctrl+Shift+A).
+   * 3. Launches Antigravity's native Conversation Picker (antigravity.openConversationPicker).
    * 4. Automatically executes: Paste -> wait -> Down Arrow -> wait -> Enter.
    */
   public async openConversation(session: ConversationSession): Promise<void> {
@@ -790,17 +735,19 @@ export class ConversationService {
       await vscode.env.clipboard.writeText(cleanTitle);
     }
 
-    // 3. Open Antigravity Conversation Picker
-    let pickerOpened = false;
+    // 3. Open Antigravity's native Conversation Picker
     try {
       await vscode.commands.executeCommand('antigravity.openConversationPicker');
-      pickerOpened = true;
-    } catch (e) {
-      console.warn('[ConversationService] executeCommand failed, falling back to Ctrl+Shift+A keystroke', e);
+    } catch {
+      try {
+        await vscode.commands.executeCommand('openConversationPicker');
+      } catch {
+        // ignore
+      }
     }
 
-    // 4. Automated execution: (open shortcut if needed) -> wait -> Paste -> wait -> Down -> wait -> Enter
-    this.automatePasteAndSelect(cleanTitle, !pickerOpened);
+    // 4. Automated execution: Paste -> wait -> Down Arrow -> wait -> Enter
+    this.automatePasteAndSelect(cleanTitle);
   }
 
   /**
