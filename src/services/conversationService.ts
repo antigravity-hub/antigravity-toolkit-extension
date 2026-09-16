@@ -627,8 +627,9 @@ export class ConversationService {
           'WshShell.SendKeys "^v"',
           'WScript.Sleep 1800',
           'WshShell.SendKeys "{DOWN}"',
-          'WScript.Sleep 900',
+          'WScript.Sleep 1200',
           'WshShell.SendKeys "{ENTER}"',
+          'WScript.Sleep 800',
         ].join('\r\n');
         fs.writeFileSync(tempVbs, vbsContent, 'utf8');
 
@@ -652,7 +653,7 @@ export class ConversationService {
     } else if (process.platform === 'darwin') {
       try {
         const script =
-          'delay 0.9\ntell application "System Events" to keystroke "v" using command down\ndelay 1.8\ntell application "System Events" to key code 125\ndelay 0.9\ntell application "System Events" to key code 36';
+          'delay 0.9\ntell application "System Events" to keystroke "v" using command down\ndelay 1.8\ntell application "System Events" to key code 125\ndelay 1.2\ntell application "System Events" to key code 36\ndelay 0.8';
         child_process.exec(`osascript -e '${script}'`);
       } catch {
         // ignore
@@ -660,7 +661,7 @@ export class ConversationService {
     } else {
       try {
         child_process.exec(
-          'sleep 0.9 && xdotool key ctrl+v && sleep 1.8 && xdotool key Down && sleep 0.9 && xdotool key Return'
+          'sleep 0.9 && xdotool key ctrl+v && sleep 1.8 && xdotool key Down && sleep 1.2 && xdotool key Return && sleep 0.8'
         );
       } catch {
         // ignore
