@@ -220,11 +220,12 @@ export class ConversationService {
    * (antigravityUnifiedStateSync.trajectorySummaries) with zero lag via pure Protobuf parser.
    * Authoritative source: Antigravity IDE database only.
    */
-  private loadTrajectorySummaries(): void {
+  private loadTrajectorySummaries(force = false): void {
     const now = Date.now();
-    if (this.trajectoryMap.size > 0 && now - this.lastTrajectoryLoad < 30000) {
+    if (!force && this.trajectoryMap.size > 0 && now - this.lastTrajectoryLoad < 30000) {
       return;
     }
+    this.trajectoryMap.clear();
 
     try {
       const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
@@ -383,7 +384,7 @@ export class ConversationService {
       return this.cachedSessions;
     }
 
-    this.loadTrajectorySummaries();
+    this.loadTrajectorySummaries(forceRefresh);
     const brainDirs = this.getBrainDirectories();
     const { names: knownWorkspaces, pathMap } = this.getKnownWorkspaces();
     const sessions: ConversationSession[] = [];
