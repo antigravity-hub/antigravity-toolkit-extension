@@ -228,79 +228,86 @@ export class ConversationService {
     try {
       const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
       const possibleDbs = [
-        path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
         path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
+        path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
       ];
-      const dbPath = possibleDbs.find((p) => fs.existsSync(p));
-      if (!dbPath) return;
 
-      const val = child_process
-        .execSync(
-          `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';"`,
-          { maxBuffer: 30 * 1024 * 1024, timeout: 6000, windowsHide: true }
-        )
-        .toString()
-        .trim();
+      for (const dbPath of possibleDbs) {
+        if (!fs.existsSync(dbPath)) continue;
 
-      if (!val) return;
+        try {
+          const val = child_process
+            .execSync(
+              `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';"`,
+              { maxBuffer: 50 * 1024 * 1024, timeout: 7000, windowsHide: true }
+            )
+            .toString()
+            .trim();
 
-      const buf = Buffer.from(val, 'base64');
-      const topFields = this.parseProto(buf);
+          if (!val) continue;
 
-      for (const f of topFields) {
-        if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
-        const sub = this.parseProto(f.val);
-        let uuid = '';
-        let b64Payload: Buffer | null = null;
-        for (const s of sub) {
-          if (s.fieldNum === 1 && s.type === 'bytes') {
-            uuid = s.val.toString('utf8');
-          } else if (s.fieldNum === 2 && s.type === 'bytes') {
-            b64Payload = s.val;
-          }
-        }
+          const buf = Buffer.from(val, 'base64');
+          const topFields = this.parseProto(buf);
 
-        if (uuid && b64Payload) {
-          try {
-            const innerBuf = Buffer.from(b64Payload.toString('utf8'), 'base64');
-            const innerFields = this.parseProto(innerBuf);
-            let title = '';
-            let workspace = '';
-            let workspaceFullPath = '';
-
-            for (const inf of innerFields) {
-              if (inf.fieldNum === 1 && inf.type === 'bytes') {
-                title = inf.val.toString('utf8');
-              } else if (inf.fieldNum === 9 && inf.type === 'bytes') {
-                const wFields = this.parseProto(inf.val);
-                for (const wf of wFields) {
-                  if (wf.type === 'bytes') {
-                    const str = wf.val.toString('utf8');
-                    const match = str.match(/file:\/\/\/([^\s\x00-\x1f"']+)/);
-                    if (match) {
-                      const raw = decodeURIComponent(match[0]);
-                      const clean = raw.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
-                      const norm = path.normalize(clean);
-                      workspaceFullPath = norm;
-                      workspace = path.basename(norm);
-                    }
-                  }
-                }
+          for (const f of topFields) {
+            if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
+            const sub = this.parseProto(f.val);
+            let uuid = '';
+            let b64Payload: Buffer | null = null;
+            for (const s of sub) {
+              if (s.fieldNum === 1 && s.type === 'bytes') {
+                uuid = s.val.toString('utf8');
+              } else if (s.fieldNum === 2 && s.type === 'bytes') {
+                b64Payload = s.val;
               }
             }
 
-            if (title && title.length > 1) {
-              this.trajectoryMap.set(uuid, { title, workspace, workspaceFullPath });
+            if (uuid && b64Payload && !this.trajectoryMap.has(uuid)) {
+              try {
+                const innerBuf = Buffer.from(b64Payload.toString('utf8'), 'base64');
+                const innerFields = this.parseProto(innerBuf);
+                let title = '';
+                let workspace = '';
+                let workspaceFullPath = '';
+
+                for (const inf of innerFields) {
+                  if (inf.fieldNum === 1 && inf.type === 'bytes') {
+                    title = inf.val.toString('utf8');
+                  } else if (inf.fieldNum === 9 && inf.type === 'bytes') {
+                    const wFields = this.parseProto(inf.val);
+                    for (const wf of wFields) {
+                      if (wf.type === 'bytes') {
+                        const str = wf.val.toString('utf8');
+                        const match = str.match(/file:\/\/\/([^\s\x00-\x1f"']+)/);
+                        if (match) {
+                          const raw = decodeURIComponent(match[0]);
+                          const clean = raw.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
+                          const norm = path.normalize(clean);
+                          workspaceFullPath = norm;
+                          workspace = path.basename(norm);
+                        }
+                      }
+                    }
+                  }
+                }
+
+                if (title && title.length > 1) {
+                  this.trajectoryMap.set(uuid, { title, workspace, workspaceFullPath });
+                }
+              } catch {
+                // ignore item parse error
+              }
             }
-          } catch {
-            // ignore item parse error
           }
+        } catch {
+          // ignore single db error
         }
       }
       this.lastTrajectoryLoad = now;
     } catch (e) {
       console.warn('[ConversationService] Failed to load trajectory summaries:', e);
     }
+
   }
 
   /**
