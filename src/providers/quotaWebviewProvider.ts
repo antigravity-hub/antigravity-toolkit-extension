@@ -87,6 +87,22 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             }
           }
           break;
+        case 'searchContent':
+          if (typeof message.query === 'string') {
+            const results = await this.conversationService.searchConversationContent(
+              message.query,
+              message.scope || 'workspace'
+            );
+            if (this._view) {
+              this._view.webview.postMessage({
+                command: 'contentSearchResults',
+                query: message.query,
+                scope: message.scope,
+                results,
+              });
+            }
+          }
+          break;
       }
     });
 
@@ -359,13 +375,13 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             .replace(/'/g, '&#039;');
 
           return `
-          <div class="timeline-node" onclick="handleOpenChat(this, '${s.id}')">
+          <div class="timeline-node" data-session-id="${s.id}" data-title="${escapedTitle.toLowerCase()}" onclick="handleOpenChat(this, '${s.id}')">
             <div class="node-bullet">
               <span class="node-num">${sIdx + 1}</span>
             </div>
             <div class="node-content">
               <div class="node-header">
-                <span class="node-title" title="${escapedTitle}">${escapedTitle}</span>
+                <span class="node-title" title="${escapedTitle}" data-original-title="${escapedTitle}">${escapedTitle}</span>
                 <span class="node-token-tag">${tokens}</span>
               </div>
               <div class="node-footer">
@@ -428,7 +444,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         const isOpenByDefault = isCurrentProject || pIdx === 0;
 
         return `
-        <div class="project-cluster-card ${isOpenByDefault ? 'is-expanded' : 'is-collapsed'} ${isCurrentProject ? 'is-current' : ''}" id="proj-card-${pIdx}">
+        <div class="project-cluster-card ${isOpenByDefault ? 'is-expanded' : 'is-collapsed'} ${isCurrentProject ? 'is-current' : ''}" id="proj-card-${pIdx}" data-project-name="${pName.toLowerCase()}">
           <div class="project-cluster-header" onclick="toggleProject(${pIdx})">
             <div class="project-name-row">
               <span class="project-chevron" id="proj-chevron-${pIdx}">${isOpenByDefault ? '▼' : '▶'}</span>
@@ -1872,6 +1888,209 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       box-shadow: 0 0 10px var(--seafoam-glow);
     }
 
+    /* Chat Search Toolbar */
+    .chat-search-container {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      padding: 6px 8px;
+      margin-bottom: 8px;
+    }
+
+    .chat-search-row {
+      display: flex;
+      align-items: center;
+      width: 100%;
+    }
+
+    .chat-search-input-wrap {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 7px;
+      padding: 3px 7px;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+
+    .chat-search-input-wrap:focus-within {
+      border-color: var(--seafoam);
+      box-shadow: 0 0 8px var(--seafoam-glow);
+      background: rgba(0, 0, 0, 0.55);
+    }
+
+    .chat-search-icon {
+      font-size: 11px;
+      opacity: 0.85;
+      user-select: none;
+      flex-shrink: 0;
+    }
+
+    .chat-search-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #f1f5f9;
+      font-size: 11px;
+      font-family: inherit;
+      padding: 2px 0;
+      min-width: 0;
+    }
+
+    .chat-search-input::placeholder {
+      color: #64748b;
+      font-size: 10.5px;
+    }
+
+    .chat-search-clear {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 11px;
+      cursor: pointer;
+      padding: 1px 4px;
+      border-radius: 4px;
+      line-height: 1;
+      flex-shrink: 0;
+      transition: color 0.15s;
+    }
+
+    .chat-search-clear:hover {
+      color: #fff;
+    }
+
+    .chat-search-btn {
+      background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      flex-shrink: 0;
+      box-shadow: 0 1px 6px var(--seafoam-glow);
+      transition: opacity 0.15s;
+    }
+
+    .chat-search-btn:hover {
+      opacity: 0.9;
+    }
+
+    .chat-search-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* Content Search Results View */
+    .search-results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px 8px;
+      background: rgba(20, 184, 166, 0.12);
+      border: 1px solid rgba(45, 212, 191, 0.25);
+      border-radius: 8px;
+      font-size: 10.5px;
+    }
+
+    .search-results-info {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .search-badge-query {
+      color: var(--seafoam-light);
+      font-weight: 600;
+    }
+
+    .search-badge-count {
+      color: #cbd5e1;
+      font-size: 9.5px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    .search-results-dismiss {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 10px;
+      cursor: pointer;
+      padding: 2px 5px;
+      border-radius: 4px;
+      transition: color 0.15s;
+    }
+
+    .search-results-dismiss:hover {
+      color: #f87171;
+    }
+
+    /* Search snippet boxes */
+    .search-snippets-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin: 6px 0;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 6px;
+      padding: 5px 7px;
+      border-left: 2px solid var(--seafoam);
+    }
+
+    .search-snippet-item {
+      font-size: 10px;
+      color: #cbd5e1;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    .search-snippet-role {
+      font-weight: 700;
+      font-size: 9px;
+      text-transform: uppercase;
+      margin-right: 4px;
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+
+    .search-snippet-role.role-user {
+      background: rgba(56, 189, 248, 0.2);
+      color: #38bdf8;
+    }
+
+    .search-snippet-role.role-assistant {
+      background: rgba(45, 212, 191, 0.2);
+      color: #2dd4bf;
+    }
+
+    .search-snippet-role.role-system {
+      background: rgba(148, 163, 184, 0.2);
+      color: #94a3b8;
+    }
+
+    mark.search-highlight {
+      background: rgba(20, 184, 166, 0.45);
+      color: #5eead4;
+      font-weight: 700;
+      padding: 0 2px;
+      border-radius: 2px;
+    }
+
     /* Tab 3: Remote Control */
     .remote-card {
       background: var(--card-bg);
@@ -2122,6 +2341,78 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         </button>
       </div>
 
+      <!-- SEARCH TOOLBAR: Title Search & Message Content Search -->
+      <div class="chat-search-container">
+        <!-- 1. Search Titles -->
+        <div class="chat-search-row">
+          <div class="chat-search-input-wrap">
+            <span class="chat-search-icon">🏷️</span>
+            <input
+              type="text"
+              id="search-titles-input"
+              class="chat-search-input"
+              placeholder="Search titles / جستجو در تیترها..."
+              oninput="handleTitleSearch(this.value)"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button
+              type="button"
+              class="chat-search-clear"
+              id="btn-clear-title"
+              onclick="clearTitleSearch()"
+              title="Clear title filter"
+              style="display: none;"
+            >✕</button>
+          </div>
+        </div>
+
+        <!-- 2. Search Inside Messages / Content -->
+        <div class="chat-search-row">
+          <div class="chat-search-input-wrap">
+            <span class="chat-search-icon">💬</span>
+            <input
+              type="text"
+              id="search-content-input"
+              class="chat-search-input"
+              placeholder="Search conversation text / جستجو در متن مکالمات..."
+              onkeydown="if(event.key === 'Enter') executeContentSearch()"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button
+              type="button"
+              class="chat-search-btn"
+              id="btn-search-content"
+              onclick="executeContentSearch()"
+              title="Search conversation messages"
+            >
+              <span id="btn-search-content-label">🔍 Find</span>
+            </button>
+            <button
+              type="button"
+              class="chat-search-clear"
+              id="btn-clear-content"
+              onclick="clearContentSearch()"
+              title="Clear text search"
+              style="display: none;"
+            >✕</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Content Search Results Container -->
+      <div id="content-search-results-area" style="display: none; flex-direction: column; gap: 8px; margin-bottom: 12px;">
+        <div class="search-results-header">
+          <div class="search-results-info">
+            <span class="search-badge-query">💬 <span id="content-search-query-badge"></span></span>
+            <span class="search-badge-count" id="content-search-count-badge">0 Matches</span>
+          </div>
+          <button type="button" class="search-results-dismiss" onclick="clearContentSearch()">Dismiss ✕</button>
+        </div>
+        <div id="content-search-results-list" class="timeline-tree"></div>
+      </div>
+
       <div id="scope-workspace-view" style="display: flex; flex-direction: column; gap: 8px;">
         <div class="subhead-title">
           <span>${currentWorkspaceName || 'Workspace'} Sessions</span>
@@ -2359,17 +2650,275 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       }
     }
 
+    var activeTitleFilter = '';
+    var currentContentSearchQuery = '';
+
+    function escapeRegex(str) {
+      var specials = ['.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\\\'];
+      var s = str || '';
+      for (var i = 0; i < specials.length; i++) {
+        s = s.split(specials[i]).join('\\\\' + specials[i]);
+      }
+      return s;
+    }
+
+    function escapeHtml(str) {
+      return (str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function handleTitleSearch(value) {
+      activeTitleFilter = (value || '').trim();
+      var clearBtn = document.getElementById('btn-clear-title');
+      if (clearBtn) clearBtn.style.display = activeTitleFilter ? 'inline-block' : 'none';
+
+      var q = activeTitleFilter.toLowerCase();
+
+      // 1. Filter nodes in Workspace View
+      var wsNodes = document.querySelectorAll('#scope-workspace-view .timeline-node');
+      var wsMatchCount = 0;
+      wsNodes.forEach(function(node) {
+        var titleEl = node.querySelector('.node-title');
+        var origTitle = titleEl ? (titleEl.getAttribute('data-original-title') || titleEl.innerText) : '';
+        if (titleEl && !titleEl.getAttribute('data-original-title')) {
+          titleEl.setAttribute('data-original-title', origTitle);
+        }
+
+        var matches = !q || origTitle.toLowerCase().indexOf(q) !== -1;
+        node.style.display = matches ? 'flex' : 'none';
+        if (matches) {
+          wsMatchCount++;
+          if (titleEl) {
+            if (q) {
+              var regex = new RegExp('(' + escapeRegex(q) + ')', 'gi');
+              titleEl.innerHTML = escapeHtml(origTitle).replace(regex, '<mark class="search-highlight">$1</mark>');
+            } else {
+              titleEl.innerText = origTitle;
+            }
+          }
+        }
+      });
+
+      // 2. Filter nodes and cards in All Projects View
+      var projectCards = document.querySelectorAll('#scope-all-view .project-cluster-card');
+      projectCards.forEach(function(card) {
+        var pName = card.getAttribute('data-project-name') || '';
+        var nodes = card.querySelectorAll('.timeline-node');
+        var cardMatchCount = 0;
+
+        nodes.forEach(function(node) {
+          var titleEl = node.querySelector('.node-title');
+          var origTitle = titleEl ? (titleEl.getAttribute('data-original-title') || titleEl.innerText) : '';
+          if (titleEl && !titleEl.getAttribute('data-original-title')) {
+            titleEl.setAttribute('data-original-title', origTitle);
+          }
+
+          var matches = !q || origTitle.toLowerCase().indexOf(q) !== -1 || pName.indexOf(q) !== -1;
+          node.style.display = matches ? 'flex' : 'none';
+          if (matches) {
+            cardMatchCount++;
+            if (titleEl) {
+              if (q && origTitle.toLowerCase().indexOf(q) !== -1) {
+                var regex = new RegExp('(' + escapeRegex(q) + ')', 'gi');
+                titleEl.innerHTML = escapeHtml(origTitle).replace(regex, '<mark class="search-highlight">$1</mark>');
+              } else {
+                titleEl.innerText = origTitle;
+              }
+            }
+          }
+        });
+
+        if (!q) {
+          card.style.display = '';
+        } else {
+          card.style.display = cardMatchCount > 0 ? '' : 'none';
+          if (cardMatchCount > 0) {
+            var body = card.querySelector('.project-body');
+            var chevron = card.querySelector('.project-chevron');
+            if (body) body.style.display = '';
+            if (chevron) chevron.innerText = '▼';
+            card.classList.add('is-expanded');
+            card.classList.remove('is-collapsed');
+          }
+        }
+      });
+    }
+
+    function clearTitleSearch() {
+      var input = document.getElementById('search-titles-input');
+      if (input) input.value = '';
+      handleTitleSearch('');
+    }
+
+    function executeContentSearch() {
+      var input = document.getElementById('search-content-input');
+      var query = (input ? input.value : '').trim();
+      if (!query) {
+        clearContentSearch();
+        return;
+      }
+
+      currentContentSearchQuery = query;
+      var clearBtn = document.getElementById('btn-clear-content');
+      if (clearBtn) clearBtn.style.display = 'inline-block';
+
+      var searchBtn = document.getElementById('btn-search-content');
+      var searchLbl = document.getElementById('btn-search-content-label');
+      if (searchBtn) searchBtn.disabled = true;
+      if (searchLbl) searchLbl.innerHTML = '<span class="node-btn-spinner"></span>';
+
+      var btnWs = document.getElementById('btn-scope-workspace');
+      var activeScope = (btnWs && btnWs.classList.contains('active')) ? 'workspace' : 'all';
+
+      vscode.postMessage({
+        command: 'searchContent',
+        query: query,
+        scope: activeScope
+      });
+    }
+
+    function clearContentSearch() {
+      currentContentSearchQuery = '';
+      var input = document.getElementById('search-content-input');
+      if (input) input.value = '';
+
+      var clearBtn = document.getElementById('btn-clear-content');
+      if (clearBtn) clearBtn.style.display = 'none';
+
+      var resultsArea = document.getElementById('content-search-results-area');
+      if (resultsArea) resultsArea.style.display = 'none';
+
+      var resultsList = document.getElementById('content-search-results-list');
+      if (resultsList) resultsList.innerHTML = '';
+
+      var searchBtn = document.getElementById('btn-search-content');
+      var searchLbl = document.getElementById('btn-search-content-label');
+      if (searchBtn) searchBtn.disabled = false;
+      if (searchLbl) searchLbl.innerHTML = '🔍 Find';
+
+      // Restore scope views
+      var btnWs = document.getElementById('btn-scope-workspace');
+      var isWs = (btnWs && btnWs.classList.contains('active'));
+      var viewWs = document.getElementById('scope-workspace-view');
+      var viewAll = document.getElementById('scope-all-view');
+      if (viewWs) viewWs.style.display = isWs ? 'flex' : 'none';
+      if (viewAll) viewAll.style.display = isWs ? 'none' : 'flex';
+
+      if (activeTitleFilter) {
+        handleTitleSearch(activeTitleFilter);
+      }
+    }
+
+    window.addEventListener('message', function(event) {
+      var msg = event.data;
+      if (!msg) return;
+
+      if (msg.command === 'contentSearchResults') {
+        var searchBtn = document.getElementById('btn-search-content');
+        var searchLbl = document.getElementById('btn-search-content-label');
+        if (searchBtn) searchBtn.disabled = false;
+        if (searchLbl) searchLbl.innerHTML = '🔍 Find';
+
+        renderContentSearchResults(msg.query, msg.results || []);
+      }
+    });
+
+    function renderContentSearchResults(query, results) {
+      var resultsArea = document.getElementById('content-search-results-area');
+      var queryBadge = document.getElementById('content-search-query-badge');
+      var countBadge = document.getElementById('content-search-count-badge');
+      var resultsList = document.getElementById('content-search-results-list');
+
+      // Hide workspace / all views while viewing content search results
+      var viewWs = document.getElementById('scope-workspace-view');
+      var viewAll = document.getElementById('scope-all-view');
+      if (viewWs) viewWs.style.display = 'none';
+      if (viewAll) viewAll.style.display = 'none';
+
+      if (queryBadge) queryBadge.innerText = '"' + query + '"';
+      if (countBadge) countBadge.innerText = results.length + ' Chats found';
+      if (resultsArea) resultsArea.style.display = 'flex';
+
+      if (!results || results.length === 0) {
+        if (resultsList) {
+          resultsList.innerHTML = '<div style="opacity: 0.75; text-align: center; padding: 24px 12px; font-size: 11px; background: rgba(0,0,0,0.2); border-radius: 8px;">No conversation transcripts matched "<b>' + escapeHtml(query) + '</b>"</div>';
+        }
+        return;
+      }
+
+      var qRegex = new RegExp('(' + escapeRegex(query) + ')', 'gi');
+      var html = '';
+
+      results.forEach(function(item, idx) {
+        var s = item.session;
+        var escapedTitle = escapeHtml(s.title || 'Untitled Session');
+        var highlightedTitle = escapedTitle.replace(qRegex, '<mark class="search-highlight">$1</mark>');
+
+        var snippetsHtml = '';
+        if (item.snippets && item.snippets.length > 0) {
+          snippetsHtml = '<div class="search-snippets-wrap">' +
+            item.snippets.map(function(snip) {
+              var roleClass = snip.role === 'user' ? 'role-user' : snip.role === 'system' ? 'role-system' : 'role-assistant';
+              var roleLabel = snip.role === 'user' ? 'User' : snip.role === 'system' ? 'System' : 'Agent';
+              var escapedText = escapeHtml(snip.text).replace(qRegex, '<mark class="search-highlight">$1</mark>');
+              return '<div class="search-snippet-item"><span class="search-snippet-role ' + roleClass + '">' + roleLabel + '</span> ' + escapedText + '</div>';
+            }).join('') +
+            '</div>';
+        }
+
+        html += '<div class="timeline-node" onclick="handleOpenChat(this, \'' + s.id + '\')">' +
+          '<div class="node-bullet"><span class="node-num">' + (idx + 1) + '</span></div>' +
+          '<div class="node-content">' +
+            '<div class="node-header">' +
+              '<span class="node-title" title="' + escapedTitle + '">' + highlightedTitle + '</span>' +
+              '<span class="node-token-tag" style="background: rgba(20, 184, 166, 0.2); border-color: var(--seafoam);">' + item.matchCount + (item.matchCount === 1 ? ' hit' : ' hits') + '</span>' +
+            '</div>' +
+            snippetsHtml +
+            '<div class="node-footer">' +
+              '<div class="node-meta-left">' +
+                '<span class="node-date-tag date-today">' + s.dateFormatted + '</span>' +
+                '<span class="node-steps-tag">' + s.stepCount + ' Steps</span>' +
+                (s.projectName ? '<span class="node-steps-tag" style="color: var(--seafoam-light);">📁 ' + escapeHtml(s.projectName) + '</span>' : '') +
+              '</div>' +
+              '<div class="node-footer-btns" style="display: inline-flex; gap: 4px; align-items: center;">' +
+                '<button type="button" class="node-open-btn node-file-btn" onclick="event.stopPropagation(); openTranscriptOnly(\'' + s.id + '\')" title="Open raw transcript file in editor" style="background: rgba(148, 163, 184, 0.1); border-color: rgba(148, 163, 184, 0.25); color: #cbd5e1;"><span>📄 Log</span></button>' +
+                '<button type="button" class="node-open-btn" id="btn-open-' + s.id + '" onclick="event.stopPropagation(); handleOpenChat(this, \'' + s.id + '\')" title="Open in Antigravity Chat panel">' +
+                  '<svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/></svg> <span>Open in Chat</span>' +
+                '</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      });
+
+      if (resultsList) resultsList.innerHTML = html;
+    }
+
     function switchChatScope(scope) {
-      const isWs = scope === 'workspace';
-      const btnWs = document.getElementById('btn-scope-workspace');
-      const btnAll = document.getElementById('btn-scope-all');
-      const viewWs = document.getElementById('scope-workspace-view');
-      const viewAll = document.getElementById('scope-all-view');
+      var isWs = scope === 'workspace';
+      var btnWs = document.getElementById('btn-scope-workspace');
+      var btnAll = document.getElementById('btn-scope-all');
+      var viewWs = document.getElementById('scope-workspace-view');
+      var viewAll = document.getElementById('scope-all-view');
+      var resultsArea = document.getElementById('content-search-results-area');
 
       if (btnWs) btnWs.classList.toggle('active', isWs);
       if (btnAll) btnAll.classList.toggle('active', !isWs);
-      if (viewWs) viewWs.style.display = isWs ? 'flex' : 'none';
-      if (viewAll) viewAll.style.display = isWs ? 'none' : 'flex';
+
+      if (currentContentSearchQuery) {
+        executeContentSearch();
+      } else {
+        if (resultsArea) resultsArea.style.display = 'none';
+        if (viewWs) viewWs.style.display = isWs ? 'flex' : 'none';
+        if (viewAll) viewAll.style.display = isWs ? 'none' : 'flex';
+        if (activeTitleFilter) {
+          handleTitleSearch(activeTitleFilter);
+        }
+      }
     }
 
     // Live countdown timer script ticking every 1 second in DOM

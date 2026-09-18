@@ -70,6 +70,17 @@ export interface ConversationSession {
   tokenEstimate?: number;
 }
 
+export interface ContentSearchSnippet {
+  role: 'user' | 'assistant' | 'system';
+  text: string;
+}
+
+export interface ContentSearchResult {
+  session: ConversationSession;
+  snippets: ContentSearchSnippet[];
+  matchCount: number;
+}
+
 export interface AccountTokenUsage {
   accountEmail: string;
   totalInputTokens: number;

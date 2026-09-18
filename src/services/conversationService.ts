@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as child_process from 'child_process';
-import { ConversationSession, ConversationStep } from '../types';
+import { ConversationSession, ConversationStep, ContentSearchResult, ContentSearchSnippet } from '../types';
 
 export class ConversationService {
   private static instance: ConversationService;
@@ -587,6 +587,101 @@ export class ConversationService {
       }
       return false;
     });
+  }
+
+  /**
+   * Searches across conversation transcripts for specific text in user prompts or assistant responses.
+   */
+  public async searchConversationContent(
+    query: string,
+    scope: 'workspace' | 'all' = 'workspace'
+  ): Promise<ContentSearchResult[]> {
+    const cleanQuery = query.trim();
+    if (!cleanQuery) return [];
+
+    const sessions =
+      scope === 'workspace'
+        ? await this.getActiveWorkspaceConversations()
+        : await this.getConversations();
+
+    const queryLower = cleanQuery.toLowerCase();
+    const results: ContentSearchResult[] = [];
+
+    for (const session of sessions) {
+      if (!session.transcriptPath || !fs.existsSync(session.transcriptPath)) {
+        continue;
+      }
+
+      try {
+        const rawContent = fs.readFileSync(session.transcriptPath, 'utf8');
+        if (!rawContent.toLowerCase().includes(queryLower)) {
+          continue;
+        }
+
+        const lines = rawContent.split('\n');
+        const snippets: ContentSearchSnippet[] = [];
+        let matchCount = 0;
+
+        for (const line of lines) {
+          if (!line.trim() || !line.toLowerCase().includes(queryLower)) {
+            continue;
+          }
+
+          try {
+            const obj = JSON.parse(line);
+            const content = typeof obj.content === 'string' ? obj.content : '';
+            if (!content || !content.toLowerCase().includes(queryLower)) {
+              continue;
+            }
+
+            matchCount++;
+
+            // Clean content: remove XML tags like <USER_REQUEST>, <ADDITIONAL_METADATA>...</ADDITIONAL_METADATA>
+            let cleanText = content
+              .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '')
+              .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/gi, '')
+              .replace(/<conversation_summaries>[\s\S]*?<\/conversation_summaries>/gi, '')
+              .replace(/<\/?(USER_REQUEST|SYSTEM_MESSAGE)[^>]*>/gi, '')
+              .replace(/[\r\n\t]+/g, ' ')
+              .trim();
+
+            const idx = cleanText.toLowerCase().indexOf(queryLower);
+            if (idx !== -1 && snippets.length < 3) {
+              const start = Math.max(0, idx - 60);
+              const end = Math.min(cleanText.length, idx + queryLower.length + 100);
+              let excerpt = cleanText.substring(start, end);
+              if (start > 0) excerpt = '...' + excerpt;
+              if (end < cleanText.length) excerpt = excerpt + '...';
+
+              let role: 'user' | 'assistant' | 'system' = 'assistant';
+              if (obj.type === 'USER_INPUT' || obj.source === 'USER_EXPLICIT') {
+                role = 'user';
+              } else if (obj.source === 'SYSTEM') {
+                role = 'system';
+              }
+
+              if (!snippets.some((s) => s.text === excerpt)) {
+                snippets.push({ role, text: excerpt });
+              }
+            }
+          } catch {}
+        }
+
+        if (matchCount > 0) {
+          results.push({
+            session,
+            snippets,
+            matchCount,
+          });
+        }
+      } catch (err) {
+        console.error(`[ConversationService] Error searching transcript ${session.id}:`, err);
+      }
+    }
+
+    // Sort by matchCount descending, then updatedAt descending
+    results.sort((a, b) => b.matchCount - a.matchCount || b.session.updatedAt - a.session.updatedAt);
+    return results;
   }
 
   /**
