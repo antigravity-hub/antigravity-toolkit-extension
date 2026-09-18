@@ -179,6 +179,11 @@
           "type": "number",
           "default": 6,
           "description": "Interval in seconds to probe network connectivity."
+        },
+        "antigravityToolkit.networkWatchdog.showNotifications": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show notification toast popup when language server is auto-healed (status bar message is always shown silently)."
         }
       }
     }

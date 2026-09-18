@@ -11,6 +11,7 @@ import { LanguageServerClient } from '../bridge/languageServerClient';
 export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'antigravity.views.quota';
   private _view?: vscode.WebviewView;
+  private _activeTab: string = 'overview';
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
@@ -39,6 +40,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
+        case 'tabChanged':
+          if (message.tab && typeof message.tab === 'string') {
+            this._activeTab = message.tab;
+          }
+          break;
         case 'refresh':
           await this.accountService.reloadFromDiskSilently();
           this.quotaService.notifyQuotasUpdated();
@@ -154,7 +160,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       isShieldOnline,
       currentWorkspaceName,
       tokenStats,
-      activeModelName
+      activeModelName,
+      this._activeTab
     );
   }
 
@@ -168,7 +175,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     isShieldOnline: boolean,
     currentWorkspaceName: string,
     tokenStats: TokenUsageStats | null,
-    activeModelName: string
+    activeModelName: string,
+    activeTab: string = 'overview'
   ): string {
     const activeEmail = activeAccount ? activeAccount.email : 'No active account';
     const activeTier = activeAccount ? activeAccount.tier || 'Google AI Pro' : 'Free';
@@ -674,8 +682,23 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Antigravity Toolkit 2.0</title>
   <style>
+    @font-face {
+      font-family: 'Vazirmatn';
+      src: local('Vazirmatn'), local('Vazirmatn UI'), local('Vazir'), local('Vazir UI');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: 'Vazir';
+      src: local('Vazir'), local('Vazirmatn');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+
     :root {
-      --font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif);
+      --font-family: 'Vazirmatn', 'Vazir', var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif);
       --seafoam: #2dd4bf;
       --seafoam-light: #5eead4;
       --seafoam-dark: #0f766e;
@@ -709,6 +732,12 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       color: var(--text-main);
       padding: 10px;
       overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    input, button, select, textarea {
+      font-family: inherit;
     }
 
     /* Outer Wrapper */
@@ -2044,28 +2073,52 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     .search-snippets-wrap {
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 5px;
       margin: 6px 0;
-      background: rgba(0, 0, 0, 0.3);
+      background: rgba(0, 0, 0, 0.35);
       border-radius: 6px;
-      padding: 5px 7px;
+      padding: 6px 8px;
       border-left: 2px solid var(--seafoam);
     }
 
     .search-snippet-item {
-      font-size: 10px;
+      font-size: 10.5px;
       color: #cbd5e1;
-      line-height: 1.35;
+      line-height: 1.5;
       word-break: break-word;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+
+    .search-snippet-item.is-rtl {
+      direction: rtl;
+      text-align: right;
+      unicode-bidi: plaintext;
+    }
+
+    .search-snippet-item.is-ltr {
+      direction: ltr;
+      text-align: left;
+    }
+
+    .search-snippet-text {
+      flex: 1;
     }
 
     .search-snippet-role {
       font-weight: 700;
-      font-size: 9px;
+      font-size: 8.5px;
       text-transform: uppercase;
-      margin-right: 4px;
-      padding: 1px 4px;
+      padding: 1px 5px;
       border-radius: 3px;
+      flex-shrink: 0;
+      letter-spacing: 0.02em;
+    }
+
+    .search-snippet-item.is-rtl .search-snippet-role {
+      margin-right: 0;
+      margin-left: 2px;
     }
 
     .search-snippet-role.role-user {
@@ -2247,26 +2300,26 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     <!-- Smart Responsive Tabs Navigation -->
     <div class="tab-navigation">
-      <button class="tab-btn active" onclick="switchTab('overview')">
+      <button class="tab-btn ${activeTab === 'overview' ? 'active' : ''}" onclick="switchTab('overview')">
         <span class="tab-icon">⚡</span>
         <span>Overview</span>
       </button>
-      <button class="tab-btn" onclick="switchTab('history')">
+      <button class="tab-btn ${activeTab === 'history' ? 'active' : ''}" onclick="switchTab('history')">
         <span class="tab-icon">📜</span>
         <span>Chats</span>
       </button>
-      <button class="tab-btn" onclick="switchTab('remote')">
+      <button class="tab-btn ${activeTab === 'remote' ? 'active' : ''}" onclick="switchTab('remote')">
         <span class="tab-icon">📱</span>
         <span>Remote</span>
       </button>
-      <button class="tab-btn" onclick="switchTab('bridge')">
+      <button class="tab-btn ${activeTab === 'bridge' ? 'active' : ''}" onclick="switchTab('bridge')">
         <span class="tab-icon">🛡️</span>
         <span>Bridge</span>
       </button>
     </div>
 
     <!-- TAB 1: OVERVIEW -->
-    <div id="tab-overview" class="tab-content active">
+    <div id="tab-overview" class="tab-content ${activeTab === 'overview' ? 'active' : ''}">
       <!-- Active Session Card -->
       <div class="active-session-card">
         <div class="active-session-top">
@@ -2343,7 +2396,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     </div>
 
     <!-- TAB 2: CHATS & PROJECT GRAPH -->
-    <div id="tab-history" class="tab-content">
+    <div id="tab-history" class="tab-content ${activeTab === 'history' ? 'active' : ''}">
       <div class="chat-scope-bar">
         <button class="chat-scope-btn active" id="btn-scope-workspace" onclick="switchChatScope('workspace')">
           <span>📂 ${currentWorkspaceName || 'Current'} (${workspaceConversations.length})</span>
@@ -2363,6 +2416,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               type="text"
               id="search-titles-input"
               class="chat-search-input"
+              dir="auto"
               placeholder="Search titles / جستجو در تیترها..."
               oninput="handleTitleSearch(this.value)"
               autocomplete="off"
@@ -2387,7 +2441,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               type="text"
               id="search-content-input"
               class="chat-search-input"
+              dir="auto"
               placeholder="Search conversation text / جستجو در متن مکالمات..."
+              oninput="handleContentSearchInput(this.value)"
               onkeydown="if(event.key === 'Enter') executeContentSearch()"
               autocomplete="off"
               spellcheck="false"
@@ -2443,7 +2499,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     </div>
 
     <!-- TAB 3: REMOTE CONTROL -->
-    <div id="tab-remote" class="tab-content">
+    <div id="tab-remote" class="tab-content ${activeTab === 'remote' ? 'active' : ''}">
       <div class="remote-card">
         <div class="remote-icon-wrapper">📱</div>
         <div class="remote-title">Antigravity Mobile & Telegram</div>
@@ -2468,7 +2524,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     </div>
 
     <!-- TAB 4: SHIELD BRIDGE -->
-    <div id="tab-bridge" class="tab-content">
+    <div id="tab-bridge" class="tab-content ${activeTab === 'bridge' ? 'active' : ''}">
       <div class="bridge-card">
         <div class="bridge-row">
           <span>Shield Daemon Status:</span>
@@ -2514,12 +2570,30 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
 
-      const targetBtn = Array.from(document.querySelectorAll('.tab-btn')).find(b => b.getAttribute('onclick').includes(tabId));
+      const targetBtn = Array.from(document.querySelectorAll('.tab-btn')).find(b => {
+        const attr = b.getAttribute('onclick');
+        return attr && attr.includes(tabId);
+      });
       if (targetBtn) targetBtn.classList.add('active');
 
       const targetContent = document.getElementById('tab-' + tabId);
       if (targetContent) targetContent.classList.add('active');
+
+      try {
+        const state = vscode.getState() || {};
+        state.activeTab = tabId;
+        vscode.setState(state);
+        vscode.postMessage({ command: 'tabChanged', tab: tabId });
+      } catch (e) {}
     }
+
+    // Restore persisted active tab on client load if previously saved
+    try {
+      const savedState = vscode.getState();
+      if (savedState && savedState.activeTab && savedState.activeTab !== '${activeTab}') {
+        switchTab(savedState.activeTab);
+      }
+    } catch (e) {}
 
     let currentQuotaWindow = '5h';
 
@@ -2778,6 +2852,31 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       handleTitleSearch('');
     }
 
+    var contentSearchDebounceTimer = null;
+
+    function handleContentSearchInput(val) {
+      var query = (val || '').trim();
+      var clearBtn = document.getElementById('btn-clear-content');
+      if (clearBtn) clearBtn.style.display = query ? 'inline-block' : 'none';
+
+      if (!query) {
+        clearContentSearch();
+        return;
+      }
+
+      var searchLbl = document.getElementById('btn-search-content-label');
+      if (searchLbl) searchLbl.innerHTML = '<span class="node-btn-spinner"></span>';
+
+      if (contentSearchDebounceTimer) {
+        clearTimeout(contentSearchDebounceTimer);
+      }
+
+      // Live search debounced at 250ms
+      contentSearchDebounceTimer = setTimeout(function() {
+        executeContentSearch();
+      }, 250);
+    }
+
     function executeContentSearch() {
       var input = document.getElementById('search-content-input');
       var query = (input ? input.value : '').trim();
@@ -2790,9 +2889,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       var clearBtn = document.getElementById('btn-clear-content');
       if (clearBtn) clearBtn.style.display = 'inline-block';
 
-      var searchBtn = document.getElementById('btn-search-content');
       var searchLbl = document.getElementById('btn-search-content-label');
-      if (searchBtn) searchBtn.disabled = true;
       if (searchLbl) searchLbl.innerHTML = '<span class="node-btn-spinner"></span>';
 
       var btnWs = document.getElementById('btn-scope-workspace');
@@ -2806,6 +2903,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     function clearContentSearch() {
+      if (contentSearchDebounceTimer) {
+        clearTimeout(contentSearchDebounceTimer);
+        contentSearchDebounceTimer = null;
+      }
       currentContentSearchQuery = '';
       var input = document.getElementById('search-content-input');
       if (input) input.value = '';
@@ -2842,6 +2943,13 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       if (!msg) return;
 
       if (msg.command === 'contentSearchResults') {
+        var input = document.getElementById('search-content-input');
+        var currentVal = (input ? input.value : '').trim();
+        // Ignore stale async results if user edited query in the meantime
+        if (currentVal && msg.query !== currentVal) {
+          return;
+        }
+
         var searchBtn = document.getElementById('btn-search-content');
         var searchLbl = document.getElementById('btn-search-content-label');
         if (searchBtn) searchBtn.disabled = false;
@@ -2889,7 +2997,12 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               var roleClass = snip.role === 'user' ? 'role-user' : snip.role === 'system' ? 'role-system' : 'role-assistant';
               var roleLabel = snip.role === 'user' ? 'User' : snip.role === 'system' ? 'System' : 'Agent';
               var escapedText = escapeHtml(snip.text).replace(qRegex, '<mark class="search-highlight">$1</mark>');
-              return '<div class="search-snippet-item"><span class="search-snippet-role ' + roleClass + '">' + roleLabel + '</span> ' + escapedText + '</div>';
+              var rtlClass = snip.isRtl ? ' is-rtl' : ' is-ltr';
+              var dirAttr = snip.isRtl ? ' dir="rtl"' : ' dir="ltr"';
+              return '<div class="search-snippet-item' + rtlClass + '"' + dirAttr + '>' +
+                '<span class="search-snippet-role ' + roleClass + '">' + roleLabel + '</span>' +
+                '<span class="search-snippet-text">' + escapedText + '</span>' +
+              '</div>';
             }).join('') +
             '</div>';
         }

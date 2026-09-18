@@ -645,30 +645,45 @@ export class ConversationService {
                 raw = reqMatch[1];
               }
             } else if (isAssistant) {
-              raw = raw.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
-              raw = raw.replace(/call:[a-zA-Z0-9_:]+\{[\s\S]*?\}/gi, '');
+              raw = raw.replace(/<thought>[\s\S]*?<\/thought>/gi, ' ');
             }
 
-            // Clean noise: XML, metadata, JSON artifacts, markdown headers, code blocks
+            // Clean noise: XML, metadata, JSON artifacts, tool calls, markdown headers, code blocks
             let cleanText = raw
-              .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '')
-              .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/gi, '')
-              .replace(/<conversation_summaries>[\s\S]*?<\/conversation_summaries>/gi, '')
-              .replace(/<SYSTEM_MESSAGE>[\s\S]*?<\/SYSTEM_MESSAGE>/gi, '')
+              .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, ' ')
+              .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/gi, ' ')
+              .replace(/<conversation_summaries>[\s\S]*?<\/conversation_summaries>/gi, ' ')
+              .replace(/<SYSTEM_MESSAGE>[\s\S]*?<\/SYSTEM_MESSAGE>/gi, ' ')
               .replace(/<[^>]+>/g, ' ')
+              // Strip tool call signatures like call:default_api:grep_search{...}
+              .replace(/call:[a-zA-Z0-9_:]+\s*\{[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, ' ')
+              .replace(/call:[a-zA-Z0-9_:]+/gi, ' ')
+              // Strip JSON keys and tool dump artifacts
+              .replace(/"?(?:File|SearchPath|LineNumber|LineContent|toolAction|toolSummary|TargetFile|CommandLine|Query)"?\s*:\s*(?:"[^"]*"|\d+|true|false|\{[^}]*\})/gi, ' ')
               .replace(/\{"File":[\s\S]*?\}/gi, ' ')
-              .replace(/"LineContent":\s*"[^"]*"/gi, ' ')
-              .replace(/"LineNumber":\s*\d+/gi, ' ')
-              .replace(/^#{1,6}\s+/gm, '')
-              .replace(/\s+#{1,6}\s+/g, ' ')
-              .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1')
+              .replace(/\{"name":[\s\S]*?\}/gi, ' ')
+              .replace(/\{"LineContent":[\s\S]*?\}/gi, ' ');
+
+            // Strip nested JSON objects / arrays
+            for (let i = 0; i < 3; i++) {
+              cleanText = cleanText.replace(/\{[^{}]{0,250}\}/g, ' ');
+              cleanText = cleanText.replace(/\[[^[\]]{0,250}\]/g, ' ');
+            }
+
+            cleanText = cleanText
               .replace(/```[\s\S]*?```/g, ' ')
               .replace(/`([^`]+)`/g, '$1')
+              .replace(/^#{1,6}\s+/gm, ' ')
+              .replace(/\s+#{1,6}\s+/g, ' ')
+              .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1')
               .replace(/\|[-:| ]+\|/g, ' ')
+              .replace(/\|/g, ' ')
               .replace(/\\"/g, '"')
               .replace(/\\n/g, ' ')
               .replace(/\\r/g, ' ')
+              .replace(/\\t/g, ' ')
               .replace(/[{}[\\]]+/g, ' ')
+              .replace(/(?:^|\s)["',:;]+(?:\s|$)/g, ' ')
               .replace(/[\r\n\t]+/g, ' ')
               .replace(/\s{2,}/g, ' ')
               .trim();
@@ -681,16 +696,24 @@ export class ConversationService {
 
             const idx = cleanText.toLowerCase().indexOf(queryLower);
             if (idx !== -1 && snippets.length < 3) {
-              const start = Math.max(0, idx - 50);
-              const end = Math.min(cleanText.length, idx + queryLower.length + 80);
+              const start = Math.max(0, idx - 45);
+              const end = Math.min(cleanText.length, idx + queryLower.length + 65);
               let excerpt = cleanText.substring(start, end).trim();
+
+              // Clean leading/trailing broken punctuation or quotes
+              excerpt = excerpt
+                .replace(/^[\s,.;:!?"'\-–—=+/\\|~`*#^&{}()[\]<>]+/, '')
+                .replace(/[\s,.;:!?"'\-–—=+/\\|~`*#^&{}()[\]<>]+$/, '')
+                .trim();
+
               if (start > 0) excerpt = '...' + excerpt;
               if (end < cleanText.length) excerpt = excerpt + '...';
 
-              const isRtl = /[\u0600-\u06FF]/.test(excerpt);
+              // Persian / Arabic RTL script detection
+              const isRtl = /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/.test(excerpt);
               const role: 'user' | 'assistant' = isUser ? 'user' : 'assistant';
 
-              if (!snippets.some((s) => s.text === excerpt)) {
+              if (excerpt.length > 3 && !snippets.some((s) => s.text === excerpt)) {
                 snippets.push({ role, text: excerpt, isRtl });
               }
             }

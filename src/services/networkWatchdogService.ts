@@ -9,6 +9,7 @@ export class NetworkWatchdogService implements vscode.Disposable {
   private status: NetworkStatus = 'online';
   private consecutiveFailures = 0;
   private isRestarting = false;
+  private lastAutoHealTimestamp = 0;
   private readonly onDidChangeStatusEmitter = new vscode.EventEmitter<NetworkStatus>();
   public readonly onDidChangeStatus = this.onDidChangeStatusEmitter.event;
 
@@ -88,7 +89,7 @@ export class NetworkWatchdogService implements vscode.Disposable {
     const isReachable = await this.checkHttpReachability();
 
     if (isReachable) {
-      const wasOffline = this.status === 'offline' || this.consecutiveFailures >= 2;
+      const wasOffline = this.status === 'offline' || this.consecutiveFailures >= 3;
       this.consecutiveFailures = 0;
 
       if (wasOffline) {
@@ -105,8 +106,8 @@ export class NetworkWatchdogService implements vscode.Disposable {
       return true;
     } else {
       this.consecutiveFailures++;
-      // Require 2 consecutive failures before marking offline to avoid false alarms from jitter
-      if (this.consecutiveFailures >= 2 && this.status !== 'offline') {
+      // Require 3 consecutive failures (~18s) before marking offline to avoid false alarms from transient jitter
+      if (this.consecutiveFailures >= 3 && this.status !== 'offline') {
         console.warn('[NetworkWatchdog] Network appears offline (consecutive failures: ' + this.consecutiveFailures + ').');
         this.status = 'offline';
         this.onDidChangeStatusEmitter.fire(this.status);
@@ -142,20 +143,35 @@ export class NetworkWatchdogService implements vscode.Disposable {
       this.status = 'online';
       this.onDidChangeStatusEmitter.fire(this.status);
 
+      // Enforce 45s cooldown to prevent repeated restarts during network oscillation
+      const now = Date.now();
+      if (now - this.lastAutoHealTimestamp < 45000) {
+        console.log('[NetworkWatchdog] Reconnected, but auto-heal cooldown active (45s). Skipping Language Server restart.');
+        this.isRestarting = false;
+        return;
+      }
+      this.lastAutoHealTimestamp = now;
+
       if (autoRestart) {
         console.log('[NetworkWatchdog] Auto-executing antigravity.restartLanguageServer...');
         await this.restartLanguageServerSilently();
 
-        vscode.window
-          .showInformationMessage(
-            '⚡ Antigravity AI: Network restored & Language Server auto-healed.',
-            'Restart Again'
-          )
-          .then((choice) => {
-            if (choice === 'Restart Again') {
-              vscode.commands.executeCommand('antigravity.restartLanguageServer');
-            }
-          });
+        // Silent, non-intrusive status bar indicator
+        vscode.window.setStatusBarMessage('⚡ Antigravity AI: Language Server auto-healed', 5000);
+
+        const showPopup = config.get<boolean>('networkWatchdog.showNotifications', false);
+        if (showPopup) {
+          vscode.window
+            .showInformationMessage(
+              '⚡ Antigravity AI: Network restored & Language Server auto-healed.',
+              'Restart Again'
+            )
+            .then((choice) => {
+              if (choice === 'Restart Again') {
+                vscode.commands.executeCommand('antigravity.restartLanguageServer');
+              }
+            });
+        }
       }
     } catch (err) {
       console.error('[NetworkWatchdog] Error during auto-heal restart:', err);
@@ -185,7 +201,7 @@ export class NetworkWatchdogService implements vscode.Disposable {
       const req = https.get(
         'https://clients3.google.com/generate_204',
         {
-          timeout: 3000,
+          timeout: 5000,
           headers: { 'User-Agent': 'Antigravity-Toolkit-Watchdog' },
         },
         (res) => {
