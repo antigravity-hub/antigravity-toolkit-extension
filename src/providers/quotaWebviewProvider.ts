@@ -2145,6 +2145,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       box-shadow: 0 2px 10px var(--seafoam-glow);
     }
 
+    .remote-action-btn:disabled,
+    .btn-dock:disabled {
+      background: rgba(255, 255, 255, 0.04) !important;
+      border: 1px solid rgba(255, 255, 255, 0.08) !important;
+      color: var(--text-muted, #94a3b8) !important;
+      opacity: 0.55;
+      cursor: not-allowed !important;
+      box-shadow: none !important;
+      pointer-events: none;
+      transform: none !important;
+    }
+
     /* Tab 4: Shield Bridge */
     .bridge-card {
       background: var(--card-bg);
@@ -2438,8 +2450,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         <div class="remote-desc">
           Monitor your AI coding sessions, receive prompt completion alerts, and control IDE tasks remotely from your smartphone or Telegram bot.
         </div>
-        <button class="remote-action-btn" onclick="syncShield()">
-          <span>⚡ Pair Telegram Bot</span>
+        <button class="remote-action-btn" disabled>
+          <span>Soon</span>
         </button>
       </div>
 
@@ -2449,8 +2461,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         <div class="remote-desc">
           Zero-Token Waste execution & headless auto-accept policies for Antigravity Coding Agents.
         </div>
-        <button class="btn-dock" style="width: 100%;" onclick="triggerAutoRotate()">
-          <span>🛡️ Configure Safety Gates</span>
+        <button class="btn-dock" style="width: 100%;" disabled>
+          <span>Soon</span>
         </button>
       </div>
     </div>
