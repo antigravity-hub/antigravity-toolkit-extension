@@ -629,39 +629,69 @@ export class ConversationService {
 
           try {
             const obj = JSON.parse(line);
-            const content = typeof obj.content === 'string' ? obj.content : '';
-            if (!content || !content.toLowerCase().includes(queryLower)) {
+            // Only search genuine human prompts and assistant replies, ignoring raw tool outputs
+            const isUser = obj.type === 'USER_INPUT' || obj.source === 'USER_EXPLICIT';
+            const isAssistant = obj.type === 'PLANNER_RESPONSE' || obj.source === 'MODEL';
+            if (!isUser && !isAssistant) {
+              continue;
+            }
+
+            let raw = typeof obj.content === 'string' ? obj.content : '';
+            if (!raw) continue;
+
+            if (isUser) {
+              const reqMatch = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+              if (reqMatch && reqMatch[1]) {
+                raw = reqMatch[1];
+              }
+            } else if (isAssistant) {
+              raw = raw.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+              raw = raw.replace(/call:[a-zA-Z0-9_:]+\{[\s\S]*?\}/gi, '');
+            }
+
+            // Clean noise: XML, metadata, JSON artifacts, markdown headers, code blocks
+            let cleanText = raw
+              .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '')
+              .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/gi, '')
+              .replace(/<conversation_summaries>[\s\S]*?<\/conversation_summaries>/gi, '')
+              .replace(/<SYSTEM_MESSAGE>[\s\S]*?<\/SYSTEM_MESSAGE>/gi, '')
+              .replace(/<[^>]+>/g, ' ')
+              .replace(/\{"File":[\s\S]*?\}/gi, ' ')
+              .replace(/"LineContent":\s*"[^"]*"/gi, ' ')
+              .replace(/"LineNumber":\s*\d+/gi, ' ')
+              .replace(/^#{1,6}\s+/gm, '')
+              .replace(/\s+#{1,6}\s+/g, ' ')
+              .replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1')
+              .replace(/```[\s\S]*?```/g, ' ')
+              .replace(/`([^`]+)`/g, '$1')
+              .replace(/\|[-:| ]+\|/g, ' ')
+              .replace(/\\"/g, '"')
+              .replace(/\\n/g, ' ')
+              .replace(/\\r/g, ' ')
+              .replace(/[{}[\\]]+/g, ' ')
+              .replace(/[\r\n\t]+/g, ' ')
+              .replace(/\s{2,}/g, ' ')
+              .trim();
+
+            if (!cleanText.toLowerCase().includes(queryLower)) {
               continue;
             }
 
             matchCount++;
 
-            // Clean content: remove XML tags like <USER_REQUEST>, <ADDITIONAL_METADATA>...</ADDITIONAL_METADATA>
-            let cleanText = content
-              .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '')
-              .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/gi, '')
-              .replace(/<conversation_summaries>[\s\S]*?<\/conversation_summaries>/gi, '')
-              .replace(/<\/?(USER_REQUEST|SYSTEM_MESSAGE)[^>]*>/gi, '')
-              .replace(/[\r\n\t]+/g, ' ')
-              .trim();
-
             const idx = cleanText.toLowerCase().indexOf(queryLower);
             if (idx !== -1 && snippets.length < 3) {
-              const start = Math.max(0, idx - 60);
-              const end = Math.min(cleanText.length, idx + queryLower.length + 100);
-              let excerpt = cleanText.substring(start, end);
+              const start = Math.max(0, idx - 50);
+              const end = Math.min(cleanText.length, idx + queryLower.length + 80);
+              let excerpt = cleanText.substring(start, end).trim();
               if (start > 0) excerpt = '...' + excerpt;
               if (end < cleanText.length) excerpt = excerpt + '...';
 
-              let role: 'user' | 'assistant' | 'system' = 'assistant';
-              if (obj.type === 'USER_INPUT' || obj.source === 'USER_EXPLICIT') {
-                role = 'user';
-              } else if (obj.source === 'SYSTEM') {
-                role = 'system';
-              }
+              const isRtl = /[\u0600-\u06FF]/.test(excerpt);
+              const role: 'user' | 'assistant' = isUser ? 'user' : 'assistant';
 
               if (!snippets.some((s) => s.text === excerpt)) {
-                snippets.push({ role, text: excerpt });
+                snippets.push({ role, text: excerpt, isRtl });
               }
             }
           } catch {}

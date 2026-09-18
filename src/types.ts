@@ -73,6 +73,7 @@ export interface ConversationSession {
 export interface ContentSearchSnippet {
   role: 'user' | 'assistant' | 'system';
   text: string;
+  isRtl?: boolean;
 }
 
 export interface ContentSearchResult {
