@@ -2650,6 +2650,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       }
     }
 
+    function handleOpenChatNode(el) {
+      var node = (el && el.closest) ? (el.closest('.timeline-node') || el) : el;
+      var sid = node ? node.getAttribute('data-session-id') : '';
+      if (sid) handleOpenChat(el, sid);
+    }
+
+    function openTranscriptNode(el) {
+      var node = (el && el.closest) ? (el.closest('.timeline-node') || el) : el;
+      var sid = node ? node.getAttribute('data-session-id') : '';
+      if (sid) openTranscriptOnly(sid);
+    }
+
     var activeTitleFilter = '';
     var currentContentSearchQuery = '';
 
@@ -2870,7 +2882,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             '</div>';
         }
 
-        html += '<div class="timeline-node" onclick="handleOpenChat(this, \'' + s.id + '\')">' +
+        html += '<div class="timeline-node" data-session-id="' + s.id + '" onclick="handleOpenChatNode(this)">' +
           '<div class="node-bullet"><span class="node-num">' + (idx + 1) + '</span></div>' +
           '<div class="node-content">' +
             '<div class="node-header">' +
@@ -2885,8 +2897,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                 (s.projectName ? '<span class="node-steps-tag" style="color: var(--seafoam-light);">📁 ' + escapeHtml(s.projectName) + '</span>' : '') +
               '</div>' +
               '<div class="node-footer-btns" style="display: inline-flex; gap: 4px; align-items: center;">' +
-                '<button type="button" class="node-open-btn node-file-btn" onclick="event.stopPropagation(); openTranscriptOnly(\'' + s.id + '\')" title="Open raw transcript file in editor" style="background: rgba(148, 163, 184, 0.1); border-color: rgba(148, 163, 184, 0.25); color: #cbd5e1;"><span>📄 Log</span></button>' +
-                '<button type="button" class="node-open-btn" id="btn-open-' + s.id + '" onclick="event.stopPropagation(); handleOpenChat(this, \'' + s.id + '\')" title="Open in Antigravity Chat panel">' +
+                '<button type="button" class="node-open-btn node-file-btn" onclick="event.stopPropagation(); openTranscriptNode(this)" title="Open raw transcript file in editor" style="background: rgba(148, 163, 184, 0.1); border-color: rgba(148, 163, 184, 0.25); color: #cbd5e1;"><span>📄 Log</span></button>' +
+                '<button type="button" class="node-open-btn" id="btn-open-' + s.id + '" onclick="event.stopPropagation(); handleOpenChatNode(this)" title="Open in Antigravity Chat panel">' +
                   '<svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/></svg> <span>Open in Chat</span>' +
                 '</button>' +
               '</div>' +
