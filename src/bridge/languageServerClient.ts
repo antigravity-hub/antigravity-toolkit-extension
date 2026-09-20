@@ -12,10 +12,17 @@ export interface LSEndpoint {
   pid: string;
 }
 
+export interface ActiveChatModelsResult {
+  geminiModel: string;
+  claudeModel: string;
+  isClaudeActive: boolean;
+  activeModelName: string;
+}
+
 export const MODEL_FRIENDLY_NAMES: Record<string, string> = {
-  MODEL_PLACEHOLDER_M318: 'Gemini 3.0 Flash High',
-  MODEL_PLACEHOLDER_M319: 'Gemini 3.0 Flash Medium',
-  MODEL_PLACEHOLDER_M320: 'Gemini 3.0 Flash Low',
+  MODEL_PLACEHOLDER_M318: 'Gemini 3.8 Flash (High)',
+  MODEL_PLACEHOLDER_M319: 'Gemini 3.8 Flash (Medium)',
+  MODEL_PLACEHOLDER_M320: 'Gemini 3.8 Flash (Low)',
   MODEL_PLACEHOLDER_M298: 'Gemini 3.7 Flash (High)',
   MODEL_PLACEHOLDER_M299: 'Gemini 3.7 Flash (Medium)',
   MODEL_PLACEHOLDER_M300: 'Gemini 3.7 Flash (Low)',
@@ -27,9 +34,10 @@ export const MODEL_FRIENDLY_NAMES: Record<string, string> = {
   MODEL_PLACEHOLDER_M35: 'Claude Sonnet 4.6 (Thinking)',
   MODEL_PLACEHOLDER_M26: 'Claude Opus 4.6 (Thinking)',
   MODEL_OPENAI_GPT_OSS_120B_MEDIUM: 'GPT-OSS 120B (Medium)',
-  'gemini-3.0-flash-medium': 'Gemini 3.0 Flash Medium',
-  'gemini-3.0-flash-high': 'Gemini 3.0 Flash High',
-  'gemini-3.0-flash-low': 'Gemini 3.0 Flash Low',
+  'gemini-3.8-flash-high': 'Gemini 3.8 Flash (High)',
+  'gemini-3.8-flash-medium': 'Gemini 3.8 Flash (Medium)',
+  'gemini-3.8-flash-low': 'Gemini 3.8 Flash (Low)',
+  'gemini-3.8-flash': 'Gemini 3.8 Flash',
   'gemini-3.7-flash-high': 'Gemini 3.7 Flash (High)',
   'gemini-3.7-flash-medium': 'Gemini 3.7 Flash (Medium)',
   'gemini-3.7-flash-low': 'Gemini 3.7 Flash (Low)',
@@ -45,6 +53,7 @@ export class LanguageServerClient {
   private cachedEndpoints: LSEndpoint[] = [];
   private lastEndpointsDiscovery = 0;
   private cachedActiveModel: string | null = null;
+  private cachedActiveModels: ActiveChatModelsResult | null = null;
   private lastModelCheck = 0;
 
   private isDiscovering = false;
@@ -323,15 +332,20 @@ export class LanguageServerClient {
   }
 
   /**
-   * Dynamically resolves the currently active model selected in the IDE / Antigravity Chat.
+   * Dynamically resolves both active models (latest Gemini model and Claude)
+   * selected or configured in the IDE / Antigravity Chat.
    */
-  public async getActiveChatModel(cascadeId?: string): Promise<string> {
+  public async getActiveChatModels(cascadeId?: string): Promise<ActiveChatModelsResult> {
     const now = Date.now();
-    if (this.cachedActiveModel && now - this.lastModelCheck < 10000) {
-      return this.cachedActiveModel;
+    if (this.cachedActiveModels && now - this.lastModelCheck < 10000) {
+      return this.cachedActiveModels;
     }
 
     const endpoints = await this.findLSEndpoints();
+
+    let detectedGemini: string | null = null;
+    let detectedClaude: string | null = null;
+    let isClaudeActive = false;
 
     // 1. Try cascade trajectory inference data
     if (cascadeId) {
@@ -343,9 +357,16 @@ export class LanguageServerClient {
             const raw = steps[i].metadata?.generatorModel || steps[i].metadata?.modelUsage?.model;
             if (raw) {
               const friendly = MODEL_FRIENDLY_NAMES[raw] || raw;
-              this.cachedActiveModel = friendly;
-              this.lastModelCheck = now;
-              return friendly;
+              const fLower = friendly.toLowerCase();
+              if (fLower.includes('claude') || fLower.includes('gpt')) {
+                if (!detectedClaude) detectedClaude = friendly;
+                isClaudeActive = true;
+                break;
+              } else if (fLower.includes('gemini')) {
+                if (!detectedGemini) detectedGemini = friendly;
+                isClaudeActive = false;
+                break;
+              }
             }
           }
         } catch {
@@ -354,28 +375,59 @@ export class LanguageServerClient {
       }
     }
 
-    // 2. Check userStatus from Language Server
+    // 2. Check userStatus & cascade model config from Language Server
     for (const ep of endpoints) {
       try {
         const res = await this.callLs(ep.port, ep.csrfToken, 'GetUserStatus', {
           metadata: { ideName: 'antigravity', extensionName: 'antigravity', locale: 'en' },
         });
-        const override = res?.userStatus?.cascadeModelConfigData?.defaultOverrideModelConfig?.modelOrAlias?.model;
+        const cascadeData = res?.userStatus?.cascadeModelConfigData;
+        const override = cascadeData?.defaultOverrideModelConfig?.modelOrAlias?.model;
         if (override) {
           const friendly = MODEL_FRIENDLY_NAMES[override] || override;
-          this.cachedActiveModel = friendly;
-          this.lastModelCheck = now;
-          return friendly;
+          const fLower = friendly.toLowerCase();
+          if (fLower.includes('claude') || fLower.includes('gpt')) {
+            if (!detectedClaude) detectedClaude = friendly;
+            isClaudeActive = true;
+          } else if (fLower.includes('gemini')) {
+            if (!detectedGemini) detectedGemini = friendly;
+            isClaudeActive = false;
+          }
         }
 
-        const configs = res?.userStatus?.cascadeModelConfigData?.clientModelConfigs;
+        const configs: any[] = cascadeData?.clientModelConfigs || [];
         if (Array.isArray(configs) && configs.length > 0) {
-          const rec = configs.find((c: any) => c.isRecommended) || configs[0];
-          if (rec && rec.label) {
-            const label = rec.label.replace('3.8', '3.0');
-            this.cachedActiveModel = label;
-            this.lastModelCheck = now;
-            return label;
+          // Resolve latest Gemini model
+          if (!detectedGemini) {
+            const geminiConfigs = configs.filter((c) => {
+              const lbl = (c.label || '').toLowerCase();
+              const id = (c.modelId || '').toLowerCase();
+              return lbl.includes('gemini') || id.includes('gemini');
+            });
+            const recGemini =
+              geminiConfigs.find((c) => c.isRecommended && (c.label?.includes('3.8') || c.modelId?.includes('3.8'))) ||
+              geminiConfigs.find((c) => c.label?.includes('3.8') || c.modelId?.includes('3.8')) ||
+              geminiConfigs.find((c) => c.isRecommended) ||
+              geminiConfigs[0];
+            if (recGemini && recGemini.label) {
+              detectedGemini = recGemini.label;
+            }
+          }
+
+          // Resolve Claude model
+          if (!detectedClaude) {
+            const claudeConfigs = configs.filter((c) => {
+              const lbl = (c.label || '').toLowerCase();
+              const id = (c.modelId || '').toLowerCase();
+              return lbl.includes('claude') || id.includes('claude');
+            });
+            const recClaude =
+              claudeConfigs.find((c) => c.isRecommended && c.label?.includes('Sonnet')) ||
+              claudeConfigs.find((c) => c.isRecommended) ||
+              claudeConfigs[0];
+            if (recClaude && recClaude.label) {
+              detectedClaude = recClaude.label;
+            }
           }
         }
       } catch {
@@ -383,9 +435,28 @@ export class LanguageServerClient {
       }
     }
 
-    // Fallback default
-    this.cachedActiveModel = 'Gemini 3.0 Flash Medium';
+    const geminiModel = detectedGemini || 'Gemini 3.8 Flash (Medium)';
+    const claudeModel = detectedClaude || 'Claude Sonnet 4.6 (Thinking)';
+    const activeModelName = isClaudeActive ? claudeModel : geminiModel;
+
+    const result: ActiveChatModelsResult = {
+      geminiModel,
+      claudeModel,
+      isClaudeActive,
+      activeModelName,
+    };
+
+    this.cachedActiveModels = result;
+    this.cachedActiveModel = activeModelName;
     this.lastModelCheck = now;
-    return this.cachedActiveModel;
+    return result;
+  }
+
+  /**
+   * Dynamically resolves the currently active model selected in the IDE / Antigravity Chat.
+   */
+  public async getActiveChatModel(cascadeId?: string): Promise<string> {
+    const models = await this.getActiveChatModels(cascadeId);
+    return models.activeModelName;
   }
 }

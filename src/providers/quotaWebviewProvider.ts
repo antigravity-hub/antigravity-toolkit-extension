@@ -6,7 +6,7 @@ import { AutoSwitchService } from '../services/autoSwitchService';
 import { ConversationService } from '../services/conversationService';
 import { Account, ModelQuota, QuotaGroup, ConversationSession, TokenUsageStats } from '../types';
 import { ShieldBridge } from '../bridge/shieldBridge';
-import { LanguageServerClient } from '../bridge/languageServerClient';
+import { LanguageServerClient, ActiveChatModelsResult } from '../bridge/languageServerClient';
 
 export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'antigravity.views.quota';
@@ -140,7 +140,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       ShieldBridge.getInstance().getTokenStats(),
     ]);
 
-    const activeModelName = await LanguageServerClient.getInstance().getActiveChatModel(
+    const activeModels = await LanguageServerClient.getInstance().getActiveChatModels(
       workspaceConversations[0]?.id || allConversations[0]?.id
     );
 
@@ -160,8 +160,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       isShieldOnline,
       currentWorkspaceName,
       tokenStats,
-      activeModelName,
-      this._activeTab
+      activeModels.activeModelName,
+      this._activeTab,
+      activeModels
     );
   }
 
@@ -176,12 +177,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     currentWorkspaceName: string,
     tokenStats: TokenUsageStats | null,
     activeModelName: string,
-    activeTab: string = 'overview'
+    activeTab: string = 'overview',
+    activeModels?: ActiveChatModelsResult
   ): string {
     const activeEmail = activeAccount ? activeAccount.email : 'No active account';
     const activeTier = activeAccount ? activeAccount.tier || 'Google AI Pro' : 'Free';
     const activeHealth = activeAccount ? Math.round(this.accountService.getAccountHealth(activeAccount)) : 0;
     const isAutoOn = autoSwitchStatus.enabled;
+    const geminiModel = activeModels?.geminiModel || activeModelName || 'Gemini 3.8 Flash (Medium)';
+    const claudeModel = activeModels?.claudeModel || 'Claude Sonnet 4.6 (Thinking)';
+    const isClaudeActive = activeModels?.isClaudeActive || false;
+    const primaryModel = isClaudeActive ? claudeModel : geminiModel;
+    const secondaryModel = isClaudeActive ? geminiModel : claudeModel;
     const extensionVersion =
       vscode.extensions.getExtension('antigravity-hub.antigravity-toolkit')?.packageJSON?.version || '2.3.0';
 
@@ -208,7 +215,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       const rem = geminiQuota ? geminiQuota.remainingQuota : 68;
       geminiGroup = {
         displayName: 'Google Gemini',
-        description: 'Gemini 3.7 Flash, Pro & Thinking',
+        description: 'Gemini 3.8 Flash, Pro & Thinking',
         fiveHourBucket: {
           bucketId: 'gemini-5h',
           window: '5h',
@@ -291,7 +298,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               <div class="group-name-row">
                 <span class="group-name">${group.displayName}</span>
                 ${
-                  isGemini
+                  (isGemini && !isClaudeActive) || (!isGemini && isClaudeActive)
                     ? `<span class="pill-active-model">⚡ ACTIVE IN IDE</span>`
                     : `<span class="pill-standby-model">STANDBY POOL</span>`
                 }
@@ -1187,6 +1194,30 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       border-radius: 999px;
       letter-spacing: 0.04em;
       box-shadow: 0 0 8px rgba(45, 212, 191, 0.5);
+      white-space: nowrap;
+    }
+
+    .pill-claude-model {
+      font-size: 8.5px;
+      font-weight: 800;
+      color: #431407;
+      background: #fb923c;
+      padding: 1px 6px;
+      border-radius: 999px;
+      letter-spacing: 0.04em;
+      box-shadow: 0 0 8px rgba(251, 146, 60, 0.4);
+      white-space: nowrap;
+    }
+
+    .pill-gemini-standby {
+      font-size: 8.5px;
+      font-weight: 800;
+      color: #042f2e;
+      background: #38bdf8;
+      padding: 1px 6px;
+      border-radius: 999px;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
     }
 
     .pill-standby-model {
@@ -1197,21 +1228,34 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       padding: 1px 6px;
       border-radius: 999px;
       border: 1px solid rgba(255, 255, 255, 0.1);
+      white-space: nowrap;
     }
 
     .active-session-model-row {
       display: flex;
       align-items: center;
-      gap: 7px;
+      flex-wrap: wrap;
+      gap: 6px 12px;
       margin-top: 4px;
       padding-top: 6px;
       border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .model-badge-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
 
     .active-model-name {
       font-size: 10.5px;
       font-weight: 600;
       color: #e2e8f0;
+      white-space: nowrap;
+    }
+
+    .active-model-claude {
+      color: #fed7aa;
     }
 
     /* Live Token Consumption HUD */
@@ -2331,8 +2375,15 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         </div>
         <div class="active-session-email">${activeEmail}</div>
         <div class="active-session-model-row">
-          <span class="pill-active-model">⚡ ACTIVE IN IDE</span>
-          <span class="active-model-name">${activeModelName}</span>
+          <div class="model-badge-group">
+            <span class="pill-active-model">⚡ ACTIVE IN IDE</span>
+            <span class="active-model-name">${primaryModel}</span>
+          </div>
+          ${secondaryModel ? `
+          <div class="model-badge-group claude-badge-group">
+            <span class="${isClaudeActive ? 'pill-gemini-standby' : 'pill-claude-model'}">${isClaudeActive ? '⚡ GEMINI' : '⚡ CLAUDE'}</span>
+            <span class="active-model-name ${isClaudeActive ? '' : 'active-model-claude'}">${secondaryModel}</span>
+          </div>` : ''}
         </div>
       </div>
 

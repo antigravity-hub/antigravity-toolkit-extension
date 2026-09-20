@@ -38,6 +38,16 @@ export class QuotaService {
 
     const defaultModels: ModelQuota[] = [
       {
+        modelId: 'gemini-3.8-flash',
+        displayName: 'Gemini 3.8 Flash',
+        usagePercentage: 10,
+        remainingQuota: 90,
+        totalQuota: 100,
+        resetTimeMs: fiveHoursFromNow,
+        resetTimeFormatted: this.formatCountdown(5 * 60 * 60 * 1000),
+        windowType: 'rolling_5h',
+      },
+      {
         modelId: 'gemini-3.7-flash',
         displayName: 'Gemini 3.7 Flash',
         usagePercentage: 15,
