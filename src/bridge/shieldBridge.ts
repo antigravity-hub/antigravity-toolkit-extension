@@ -29,8 +29,16 @@ export class ShieldBridge {
     });
   }
 
+  public resetDetectedBaseUrl(): void {
+    this.detectedBaseUrl = null;
+  }
+
   public async getBaseUrl(): Promise<string> {
-    if (this.detectedBaseUrl) return this.detectedBaseUrl;
+    if (this.detectedBaseUrl) {
+      const alive = await this.pingUrl(new URL('/api/health', this.detectedBaseUrl));
+      if (alive) return this.detectedBaseUrl;
+      this.detectedBaseUrl = null;
+    }
     const config = vscode.workspace.getConfiguration('antigravityToolkit');
     const configured = config.get<string>('shieldApiUrl');
     if (configured && configured !== 'http://127.0.0.1:8765' && configured !== 'http://127.0.0.1:8045') {
@@ -99,8 +107,15 @@ export class ShieldBridge {
       // ignore
     }
 
-    // Also check loopback toolkit status endpoint
-    for (const port of [8765, 8045, 8046, 8766]) {
+    // Check candidate ports directly for /api/health and /toolkit/status
+    for (const port of [8045, 8765, 8046, 8766]) {
+      try {
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/health`));
+        if (isOnline) {
+          this.detectedBaseUrl = `http://127.0.0.1:${port}`;
+          return true;
+        }
+      } catch {}
       try {
         const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/toolkit/status`));
         if (isOnline) {
@@ -110,6 +125,7 @@ export class ShieldBridge {
       } catch {}
     }
 
+    this.detectedBaseUrl = null;
     return false;
   }
 

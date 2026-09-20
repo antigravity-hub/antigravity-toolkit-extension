@@ -224,11 +224,27 @@ export function activate(context: vscode.ExtensionContext) {
     }
   }, pollIntervalMs);
 
-  // 6. Proactive Heartbeat & Background Sync to Shield (1.5s interval for fast command pickup)
+  // 6. Proactive Heartbeat & Background Sync to Shield (1.5s interval for fast command pickup & auto-reconnect)
   const shieldBridge = ShieldBridge.getInstance();
-  const sendHb = () => {
-    const active = accountService.getActiveAccount();
-    shieldBridge.sendHeartbeat(active?.email).catch(() => {});
+  let lastShieldOnline: boolean | null = null;
+  const sendHb = async () => {
+    try {
+      const active = accountService.getActiveAccount();
+      const ok = await shieldBridge.sendHeartbeat(active?.email);
+      if (lastShieldOnline !== null && lastShieldOnline !== ok) {
+        console.log(`[Toolkit Bridge] Shield status changed: ${lastShieldOnline} -> ${ok}. Auto-refreshing UI...`);
+        lastShieldOnline = ok;
+        shieldBridge.resetDetectedBaseUrl();
+        if (ok) {
+          await accountService.reloadFromDiskSilently();
+        }
+        quotaService.notifyQuotasUpdated();
+      } else if (lastShieldOnline === null) {
+        lastShieldOnline = ok;
+      }
+    } catch {
+      // ignore
+    }
   };
 
   sendHb();

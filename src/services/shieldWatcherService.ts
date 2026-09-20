@@ -48,6 +48,29 @@ export class ShieldWatcherService implements vscode.Disposable {
 
     const accountsDir = path.join(shieldDir, 'accounts');
     const accountsJson = path.join(shieldDir, 'accounts.json');
+    const bridgeJson = path.join(shieldDir, 'bridge_info.json');
+
+    // Watch bridge_info.json for live port/process restarts
+    try {
+      if (fs.existsSync(bridgeJson)) {
+        const w0 = fs.watch(bridgeJson, (_event) => this.onFileChanged());
+        this.watchers.push(w0);
+      }
+    } catch (e) {
+      console.warn('[ShieldWatcher] Could not watch bridge_info.json:', e);
+    }
+
+    // Watch parent dir to catch creation of bridge_info.json or accounts.json
+    try {
+      const wDir = fs.watch(shieldDir, (_event, filename) => {
+        if (filename === 'bridge_info.json' || filename === 'accounts.json') {
+          this.onFileChanged();
+        }
+      });
+      this.watchers.push(wDir);
+    } catch (e) {
+      console.warn('[ShieldWatcher] Could not watch shieldDir:', e);
+    }
 
     // Watch accounts.json
     try {
@@ -84,10 +107,12 @@ export class ShieldWatcherService implements vscode.Disposable {
     // Debounce 250ms to allow multi-file batch writes by Shield
     this.debounceTimer = setTimeout(async () => {
       try {
-        console.log('[ShieldWatcher] Detected disk change in Shield accounts. Auto-reloading...');
+        console.log('[ShieldWatcher] Detected disk change in Shield state. Auto-reloading...');
+        const { ShieldBridge } = await import('../bridge/shieldBridge');
+        ShieldBridge.getInstance().resetDetectedBaseUrl();
         const reloaded = await this.accountService.reloadFromDiskSilently();
+        this.quotaService.notifyQuotasUpdated();
         if (reloaded) {
-          this.quotaService.notifyQuotasUpdated();
           await this.autoSwitchService.evaluateQuotasAndRotateIfNeeded();
         }
       } catch (err) {
