@@ -25,6 +25,7 @@ export function activate(context: vscode.ExtensionContext) {
   const accountService = AccountService.initialize(context);
   const quotaService = QuotaService.getInstance();
   const conversationService = ConversationService.getInstance();
+  conversationService.initWatchers();
   const autoSwitchService = AutoSwitchService.initialize(accountService, quotaService);
   const networkWatchdog = NetworkWatchdogService.initialize();
   const shieldWatcher = ShieldWatcherService.initialize(accountService, quotaService, autoSwitchService);
@@ -32,6 +33,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(networkWatchdog);
   context.subscriptions.push(shieldWatcher);
   context.subscriptions.push({ dispose: () => autoSwitchService.dispose() });
+  context.subscriptions.push({ dispose: () => conversationService.disposeWatchers() });
 
   // 2. Initialize Webview Provider (Single Unified View)
   const quotaWebviewProvider = new QuotaWebviewProvider(

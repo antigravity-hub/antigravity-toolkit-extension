@@ -14,6 +14,8 @@ export class ConversationService {
   private lastTrajectoryLoad = 0;
   private cachedSessions: ConversationSession[] = [];
   private lastSessionsScan = 0;
+  private brainWatchers: fs.FSWatcher[] = [];
+  private watchDebounceTimer: NodeJS.Timeout | undefined;
 
   private constructor() {}
 
@@ -22,6 +24,50 @@ export class ConversationService {
       ConversationService.instance = new ConversationService();
     }
     return ConversationService.instance;
+  }
+
+  /**
+   * Initializes real-time file system watchers on the brain storage directories.
+   * Ensures that whenever a conversation is started, updated, or an IDE crash/power-loss occurs,
+   * the conversations list is immediately updated live without requiring an IDE reload.
+   */
+  public initWatchers(): void {
+    this.disposeWatchers();
+    const brainDirs = this.getBrainDirectories();
+    for (const bDir of brainDirs) {
+      if (!fs.existsSync(bDir)) continue;
+      try {
+        const watcher = fs.watch(bDir, { recursive: false }, () => {
+          this.scheduleWatchRefresh();
+        });
+        this.brainWatchers.push(watcher);
+      } catch {
+        // ignore filesystem watch limitations
+      }
+    }
+  }
+
+  private scheduleWatchRefresh(): void {
+    if (this.watchDebounceTimer) {
+      clearTimeout(this.watchDebounceTimer);
+    }
+    this.watchDebounceTimer = setTimeout(() => {
+      this.lastSessionsScan = 0;
+      this.refresh();
+    }, 1200);
+  }
+
+  public disposeWatchers(): void {
+    for (const w of this.brainWatchers) {
+      try {
+        w.close();
+      } catch {}
+    }
+    this.brainWatchers = [];
+    if (this.watchDebounceTimer) {
+      clearTimeout(this.watchDebounceTimer);
+      this.watchDebounceTimer = undefined;
+    }
   }
 
   /**
@@ -551,6 +597,170 @@ export class ConversationService {
         workspacePath,
         tokenEstimate: tokenEstimate || stepCount * 1400,
       });
+    }
+
+    // 2. DISK FALLBACK & LIVE RECOVERY SCANNER
+    // Scans brain directories directly to recover sessions that were terminated
+    // abruptly (power outage, crash, sudden window close) or are actively running
+    // and have not yet been flushed by the IDE into state.vscdb trajectorySummaries.
+    for (const bDir of brainDirs) {
+      if (!fs.existsSync(bDir)) continue;
+      try {
+        const entries = fs.readdirSync(bDir, { withFileTypes: true });
+        const folderCandidates: { name: string; mtimeMs: number }[] = [];
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const convId = entry.name;
+          if (convId === 'tempmediaStorage' || convId.startsWith('.') || seenIds.has(convId)) {
+            continue;
+          }
+          try {
+            const fStat = fs.statSync(path.join(bDir, convId));
+            folderCandidates.push({ name: convId, mtimeMs: fStat.mtimeMs });
+          } catch {}
+        }
+
+        folderCandidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+        // Process up to 80 most recent unindexed sessions
+        for (const cand of folderCandidates.slice(0, 80)) {
+          const convId = cand.name;
+          if (seenIds.has(convId)) continue;
+
+          const compact = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+          const full = path.join(bDir, convId, '.system_generated', 'logs', 'transcript_full.jsonl');
+          const tPath = fs.existsSync(compact) ? compact : fs.existsSync(full) ? full : '';
+          if (!tPath) continue;
+
+          seenIds.add(convId);
+
+          let stepCount = 0;
+          let tokenEstimate = 0;
+          let mtime = cand.mtimeMs;
+          let previewText = '';
+          let userPromptTitle = '';
+          let isSubagent = false;
+
+          try {
+            const stat = fs.statSync(tPath);
+            mtime = Math.max(mtime, stat.mtimeMs);
+            const content = fs.readFileSync(tPath, 'utf8');
+            const lines = content.split('\n').filter((l) => l.trim().length > 0);
+            stepCount = lines.length;
+            tokenEstimate = Math.round(content.length / 3.8);
+
+            for (let i = 0; i < Math.min(lines.length, 15); i++) {
+              try {
+                const entry = JSON.parse(lines[i]);
+                if (entry.type === 'USER_INPUT' && entry.content) {
+                  const raw = entry.content;
+                  const match = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
+                  const cleanPrompt = match ? match[1].trim() : raw.trim();
+                  if (cleanPrompt) {
+                    if (isSubagentText(cleanPrompt)) {
+                      isSubagent = true;
+                      break;
+                    }
+                    if (!previewText) {
+                      previewText = cleanPrompt.replace(/\s+/g, ' ').slice(0, 140);
+                      userPromptTitle = cleanPrompt.replace(/[\r\n\t]+/g, ' ').trim();
+                    }
+                  }
+                }
+              } catch {}
+            }
+
+            if (isSubagent) continue;
+            if (!previewText && stepCount <= 1) continue;
+
+            // Check implementation plan title
+            let planTitle = '';
+            const planFile = path.join(bDir, convId, 'implementation_plan.md');
+            if (fs.existsSync(planFile)) {
+              try {
+                const head = fs.readFileSync(planFile, 'utf8').split('\n')[0] || '';
+                if (head.startsWith('#')) planTitle = this.sanitizeTitle(head);
+              } catch {}
+            }
+
+            let finalTitle = planTitle;
+            if (!finalTitle && userPromptTitle) {
+              finalTitle = this.sanitizeTitle(userPromptTitle);
+              if (finalTitle.length > 50) {
+                finalTitle = finalTitle.slice(0, 48) + '...';
+              }
+            }
+            if (!finalTitle) {
+              finalTitle = `Session ${convId.slice(0, 8)}`;
+            }
+
+            if (isSubagentText(finalTitle)) continue;
+
+            // Workspace resolution
+            let projectName = 'General';
+            let workspacePath: string | undefined = undefined;
+
+            const headerText = lines.slice(0, 15).join(' ');
+            const headerNorm = headerText.toLowerCase().replace(/\\\\/g, '/').replace(/\\/g, '/');
+
+            // 1. Try matching against known project paths
+            for (const [, wsPath] of pathMap.entries()) {
+              const normWs = wsPath.toLowerCase().replace(/\\\\/g, '/').replace(/\\/g, '/');
+              if (headerNorm.includes(normWs)) {
+                workspacePath = wsPath;
+                projectName = path.basename(wsPath);
+                break;
+              }
+            }
+
+            // 2. Try matching against known project names as path segments
+            if (!workspacePath) {
+              for (const name of knownWorkspaces) {
+                const nameNorm = `/${name.toLowerCase()}/`;
+                if (headerNorm.includes(nameNorm) || headerNorm.includes(`/${name.toLowerCase()}"`)) {
+                  if (pathMap.has(name.toLowerCase())) {
+                    workspacePath = pathMap.get(name.toLowerCase());
+                  }
+                  projectName = name;
+                  break;
+                }
+              }
+            }
+
+            // 3. Fallback to active workspace folder if matching header
+            if (!workspacePath && vscode.workspace.workspaceFolders?.[0]) {
+              const currentWs = vscode.workspace.workspaceFolders[0];
+              const currentNorm = currentWs.uri.fsPath.toLowerCase().replace(/\\\\/g, '/').replace(/\\/g, '/');
+              if (headerNorm.includes(currentNorm) || headerNorm.includes(currentWs.name.toLowerCase())) {
+                workspacePath = currentWs.uri.fsPath;
+                projectName = currentWs.name;
+              }
+            }
+
+            const date = new Date(mtime || Date.now());
+            const dateFormatted = date.toLocaleDateString(undefined, {
+              month: 'short',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+
+            sessions.push({
+              id: convId,
+              title: finalTitle,
+              createdAt: mtime || Date.now(),
+              updatedAt: mtime || Date.now(),
+              dateFormatted,
+              transcriptPath: tPath,
+              stepCount,
+              previewText,
+              projectName,
+              workspacePath,
+              tokenEstimate: tokenEstimate || stepCount * 1400,
+            });
+          } catch {}
+        }
+      } catch {}
     }
 
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
