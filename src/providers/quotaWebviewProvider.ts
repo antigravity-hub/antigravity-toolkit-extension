@@ -660,7 +660,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                   <div class="compact-meter-fill" style="width: ${health}%; background: ${healthColor};"></div>
                 </div>
                 <span class="compact-health-val" style="color: ${healthColor};">${health}%</span>
-                <span class="compact-reset-pill" title="Resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>
+                ${
+                  health >= 100 && fiveHourRem >= 100
+                    ? `<span class="compact-reset-pill" style="color: #10b981; border-color: rgba(16, 185, 129, 0.3);">✓ Ready</span>`
+                    : `<span class="compact-reset-pill" title="Resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
+                }
                 ${usedFormatted ? `<span class="compact-usage-val" title="${usedTokens.toLocaleString()} tokens consumed">${usedFormatted} used</span>` : ''}
               </div>
             </div>
