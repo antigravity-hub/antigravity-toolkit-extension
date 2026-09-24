@@ -14,6 +14,7 @@ import { QuotaWebviewProvider } from './providers/quotaWebviewProvider';
 import { StatusBarManager } from './ui/statusBar';
 import { ConversationSession } from './types';
 import { ShieldBridge } from './bridge/shieldBridge';
+import { ExtensionUpdateService } from './services/extensionUpdateService';
 
 let quotaIntervalTimer: NodeJS.Timeout | undefined;
 let heartbeatTimer: NodeJS.Timeout | undefined;
@@ -29,9 +30,11 @@ export function activate(context: vscode.ExtensionContext) {
   const autoSwitchService = AutoSwitchService.initialize(accountService, quotaService);
   const networkWatchdog = NetworkWatchdogService.initialize();
   const shieldWatcher = ShieldWatcherService.initialize(accountService, quotaService, autoSwitchService);
+  const updateService = ExtensionUpdateService.getInstance();
 
   context.subscriptions.push(networkWatchdog);
   context.subscriptions.push(shieldWatcher);
+  context.subscriptions.push(updateService.initBackgroundSchedule());
   context.subscriptions.push({ dispose: () => autoSwitchService.dispose() });
   context.subscriptions.push({ dispose: () => conversationService.disposeWatchers() });
 
@@ -61,10 +64,10 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 4. Register Commands
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityToolkit.refreshAll', () => {
+    vscode.commands.registerCommand('antigravityToolkit.refreshAll', async () => {
       quotaService.notifyQuotasUpdated();
       conversationService.refresh();
-      vscode.window.showInformationMessage('Antigravity Toolkit telemetry refreshed.');
+      await updateService.checkAndUpdate(true);
     })
   );
 

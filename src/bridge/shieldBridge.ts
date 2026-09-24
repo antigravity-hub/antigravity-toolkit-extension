@@ -739,6 +739,69 @@ export class ShieldBridge {
   }
 
   /**
+   * Helper to make authenticated HTTP POST calls to Shield API endpoints.
+   */
+  public async postShieldApi<T>(apiPath: string, bodyData: any): Promise<T | null> {
+    try {
+      const baseUrl = await this.getBaseUrl();
+      const url = new URL(apiPath, baseUrl);
+      const apiKey = this.getShieldApiKey();
+      const payload = JSON.stringify(bodyData || {});
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Content-Length': Buffer.byteLength(payload).toString(),
+      };
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+        headers['x-api-key'] = apiKey;
+      }
+
+      return new Promise<T | null>((resolve) => {
+        const req = http.request(
+          url,
+          {
+            method: 'POST',
+            headers,
+            timeout: 5000,
+          },
+          (res) => {
+            let data = '';
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => {
+              try {
+                resolve(JSON.parse(data));
+              } catch {
+                resolve(null);
+              }
+            });
+          }
+        );
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => {
+          req.destroy();
+          resolve(null);
+        });
+        req.write(payload);
+        req.end();
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Installs or upgrades Antigravity Toolkit via Shield daemon CLI
+   */
+  public async installToolkit(ideId = 'antigravity'): Promise<{ success: boolean; message?: string; error?: string }> {
+    const res = await this.postShieldApi<any>('/toolkit/install', { ide_id: ideId });
+    if (res && res.success) {
+      return { success: true, message: res.message || 'Installed' };
+    }
+    return { success: false, error: res?.error || 'Failed to install' };
+  }
+
+  /**
    * Fetches real-time token consumption metrics from Shield daemon.
    */
   public async getTokenStats(): Promise<TokenUsageStats | null> {
