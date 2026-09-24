@@ -199,6 +199,13 @@ export class ConversationService {
     ];
     for (const p of fallbackProjects) {
       names.add(p);
+      if (!pathMap.has(p.toLowerCase())) {
+        const parentBase = 'd:\\Ershad Zolfi\\programming\\coding with Gemini';
+        const cand = path.join(parentBase, p);
+        if (fs.existsSync(cand)) {
+          pathMap.set(p.toLowerCase(), cand);
+        }
+      }
     }
 
     const sortedNames = Array.from(names).sort((a, b) => b.length - a.length);
@@ -616,14 +623,22 @@ export class ConversationService {
           }
           try {
             const fStat = fs.statSync(path.join(bDir, convId));
-            folderCandidates.push({ name: convId, mtimeMs: fStat.mtimeMs });
+            let mtimeMs = fStat.mtimeMs;
+            const compactPath = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+            if (fs.existsSync(compactPath)) {
+              try {
+                const tStat = fs.statSync(compactPath);
+                mtimeMs = Math.max(mtimeMs, tStat.mtimeMs);
+              } catch {}
+            }
+            folderCandidates.push({ name: convId, mtimeMs });
           } catch {}
         }
 
         folderCandidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-        // Process up to 80 most recent unindexed sessions
-        for (const cand of folderCandidates.slice(0, 80)) {
+        // Process up to 250 most recent unindexed sessions
+        for (const cand of folderCandidates.slice(0, 250)) {
           const convId = cand.name;
           if (seenIds.has(convId)) continue;
 
