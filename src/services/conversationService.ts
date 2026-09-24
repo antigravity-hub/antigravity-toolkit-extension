@@ -269,6 +269,139 @@ export class ConversationService {
   }
 
   /**
+   * Encodes an unsigned integer into a Protobuf varint Buffer.
+   */
+  private encodeVarint(value: number): Buffer {
+    const bytes: number[] = [];
+    while (value > 0x7f) {
+      bytes.push((value & 0x7f) | 0x80);
+      value = Math.floor(value / 128);
+    }
+    bytes.push(value & 0x7f);
+    return Buffer.from(bytes);
+  }
+
+  private encodeTag(fieldNum: number, wireType: number): Buffer {
+    return this.encodeVarint((fieldNum << 3) | wireType);
+  }
+
+  private encodeBytesField(fieldNum: number, data: Buffer | string): Buffer {
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
+    const tag = this.encodeTag(fieldNum, 2);
+    const len = this.encodeVarint(buf.length);
+    return Buffer.concat([tag, len, buf]);
+  }
+
+  private encodeVarintField(fieldNum: number, val: number): Buffer {
+    const tag = this.encodeTag(fieldNum, 0);
+    const v = this.encodeVarint(val);
+    return Buffer.concat([tag, v]);
+  }
+
+  private encodeTimestampField(fieldNum: number, tsMs: number): Buffer {
+    const sec = Math.floor(tsMs / 1000);
+    const nanos = Math.floor((tsMs % 1000) * 1_000_000);
+    const f1 = this.encodeVarintField(1, sec);
+    const f2 = this.encodeVarintField(2, nanos);
+    return this.encodeBytesField(fieldNum, Buffer.concat([f1, f2]));
+  }
+
+  private serializeCascadeSummary(uuidStr: string, title: string, workspaceUri: string, tsMs: number): Buffer {
+    const f1 = this.encodeBytesField(1, title);
+    const f2 = this.encodeVarintField(2, 1);
+    const f3 = this.encodeTimestampField(3, tsMs);
+    const f7 = this.encodeTimestampField(7, tsMs);
+    const wsBuf = workspaceUri
+      ? Buffer.concat([this.encodeBytesField(1, workspaceUri), this.encodeBytesField(2, workspaceUri)])
+      : Buffer.alloc(0);
+    const f9 = wsBuf.length > 0 ? this.encodeBytesField(9, wsBuf) : Buffer.alloc(0);
+    const f10 = this.encodeTimestampField(10, tsMs);
+    const f17Sub = this.encodeBytesField(6, uuidStr);
+    const f17 = this.encodeBytesField(17, f17Sub);
+    return Buffer.concat([f1, f2, f3, f7, f9, f10, f17]);
+  }
+
+  private serializeTrajectoryEntry(uuidStr: string, summaryBytes: Buffer): Buffer {
+    const b64Val = summaryBytes.toString('base64');
+    const newRow = this.encodeBytesField(1, b64Val);
+    const entryMsg = Buffer.concat([this.encodeBytesField(1, uuidStr), this.encodeBytesField(2, newRow)]);
+    return this.encodeBytesField(1, entryMsg);
+  }
+
+  /**
+   * Autonomously injects an unindexed or crash-interrupted conversation into state.vscdb
+   * (antigravityUnifiedStateSync.trajectorySummaries) so that Antigravity IDE natively recognizes it.
+   */
+  public injectTrajectorySummary(sessionId: string, title: string, workspacePath = ''): boolean {
+    try {
+      const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
+      const ideDbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+      const fallbackDbPath = path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
+      const dbPath = fs.existsSync(ideDbPath) ? ideDbPath : fs.existsSync(fallbackDbPath) ? fallbackDbPath : '';
+      if (!dbPath) return false;
+
+      // 1. Fetch current value
+      const querySql = "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';\n";
+      const qRes = child_process.spawnSync('sqlite3', [dbPath], {
+        input: querySql,
+        encoding: 'utf8',
+        windowsHide: true,
+        maxBuffer: 50 * 1024 * 1024,
+      });
+
+      const currentVal = (qRes.stdout || '').trim();
+      const currentBuf = currentVal ? Buffer.from(currentVal, 'base64') : Buffer.alloc(0);
+
+      // Check if session ID already exists in database
+      if (currentBuf.includes(Buffer.from(sessionId, 'utf8'))) {
+        this.trajectoryMap.set(sessionId, {
+          title,
+          workspace: workspacePath ? path.basename(workspacePath) : undefined,
+          workspaceFullPath: workspacePath || undefined,
+          updatedAt: Date.now(),
+        });
+        return true;
+      }
+
+      // Convert workspacePath to file URI if provided
+      let wsUri = '';
+      if (workspacePath) {
+        let norm = workspacePath.replace(/\\/g, '/');
+        if (!norm.startsWith('/')) norm = '/' + norm;
+        wsUri = `file://${encodeURI(norm)}`;
+      }
+
+      const summaryBytes = this.serializeCascadeSummary(sessionId, title, wsUri, Date.now());
+      const newEntry = this.serializeTrajectoryEntry(sessionId, summaryBytes);
+
+      const mergedBuf = Buffer.concat([newEntry, currentBuf]);
+      const mergedB64 = mergedBuf.toString('base64');
+
+      const updateSql = `UPDATE ItemTable SET value = '${mergedB64}' WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';\n`;
+      const uRes = child_process.spawnSync('sqlite3', [dbPath], {
+        input: updateSql,
+        encoding: 'utf8',
+        windowsHide: true,
+        maxBuffer: 50 * 1024 * 1024,
+      });
+
+      if (uRes.status === 0) {
+        this.trajectoryMap.set(sessionId, {
+          title,
+          workspace: workspacePath ? path.basename(workspacePath) : undefined,
+          workspaceFullPath: workspacePath || undefined,
+          updatedAt: Date.now(),
+        });
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.warn('[ConversationService] Failed to inject trajectory summary:', err);
+      return false;
+    }
+  }
+
+  /**
    * Loads official conversation titles and workspaces from state.vscdb
    * (antigravityUnifiedStateSync.trajectorySummaries) with zero lag via pure Protobuf parser.
    * Authoritative source: Antigravity IDE database only.
@@ -760,6 +893,11 @@ export class ConversationService {
               minute: '2-digit',
             });
 
+            // Autonomous session auto-healing: ensure recovered sessions are registered in state.vscdb
+            if (!this.trajectoryMap.has(convId) && finalTitle) {
+              this.injectTrajectorySummary(convId, finalTitle, workspacePath || '');
+            }
+
             sessions.push({
               id: convId,
               title: finalTitle,
@@ -1101,12 +1239,31 @@ export class ConversationService {
       await vscode.env.clipboard.writeText(searchQuery);
     }
 
-    // 4. Launch automation concurrently in background (DO NOT AWAIT!)
+    // 4. Ensure recovered session is registered in Antigravity's state database
+    const isRecoveredFromDisk = !this.trajectoryMap.has(session.id);
+    if (isRecoveredFromDisk) {
+      this.injectTrajectorySummary(session.id, session.title, session.workspacePath || '');
+      vscode.window
+        .showInformationMessage(
+          `Recovered session "${session.title}" synced into Antigravity history.`,
+          'View Full Transcript',
+          'Reload Window'
+        )
+        .then((choice) => {
+          if (choice === 'View Full Transcript') {
+            this.openTranscript(session);
+          } else if (choice === 'Reload Window') {
+            vscode.commands.executeCommand('workbench.action.reloadWindow');
+          }
+        });
+    }
+
+    // 5. Launch automation concurrently in background (DO NOT AWAIT!)
     // vscode.commands.executeCommand on QuickPick blocks until the picker is closed,
     // so automation MUST run concurrently in the background!
     this.automatePasteAndSelect(searchQuery);
 
-    // 5. Open Antigravity's native Conversation Picker (DO NOT AWAIT!)
+    // 6. Open Antigravity's native Conversation Picker (DO NOT AWAIT!)
     vscode.commands.executeCommand('antigravity.openConversationPicker').then(undefined, () => {
       vscode.commands.executeCommand('openConversationPicker').then(undefined, () => {});
     });

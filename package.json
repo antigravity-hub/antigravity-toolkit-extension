@@ -1,8 +1,8 @@
 {
   "name": "antigravity-toolkit",
   "displayName": "Antigravity Toolkit",
-  "description": "Next-Gen IDE HUD for Google Antigravity: Cyber-Glass quota telemetry, autonomous multi-account rotation, and instant live session switching.",
-  "version": "2.4.3",
+  "description": "Next-Gen IDE HUD for Google Antigravity: Cyber-Glass quota telemetry, autonomous multi-account rotation, instant live session switching, and crash-resilient chat recovery.",
+  "version": "2.5.0",
   "publisher": "antigravity-hub",
   "repository": {
     "type": "git",
