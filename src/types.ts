@@ -44,6 +44,14 @@ export interface Account {
   quotas?: ModelQuota[];
   quotaGroups?: QuotaGroup[];
   lastSyncedAt?: number;
+  disabled?: boolean;
+  disabledReason?: string;
+  proxyDisabled?: boolean;
+  proxyDisabledReason?: string;
+  validationBlocked?: boolean;
+  validationBlockedReason?: string;
+  isForbidden?: boolean;
+  forbiddenReason?: string;
 }
 
 export interface ConversationStep {

@@ -162,6 +162,14 @@ export class ShieldBridge {
                   idToken: acc.token?.id_token || acc.idToken,
                 },
                 lastSyncedAt: Date.now(),
+                disabled: Boolean(acc.disabled),
+                disabledReason: acc.disabled_reason || acc.disabledReason,
+                proxyDisabled: Boolean(acc.proxy_disabled || acc.proxyDisabled),
+                proxyDisabledReason: acc.proxy_disabled_reason || acc.proxyDisabledReason,
+                validationBlocked: Boolean(acc.validation_blocked || acc.validationBlocked),
+                validationBlockedReason: acc.validation_blocked_reason || acc.validationBlockedReason,
+                isForbidden: Boolean(acc.quota?.is_forbidden || acc.is_forbidden || acc.isForbidden),
+                forbiddenReason: acc.quota?.forbidden_reason || acc.forbidden_reason || acc.forbiddenReason,
               }));
               resolve(accounts);
             } catch {
@@ -226,10 +234,33 @@ export class ShieldBridge {
         let quotas: ModelQuota[] = [];
         let quotaGroups: import('../types').QuotaGroup[] = [];
 
+        let disabled = Boolean(acc.disabled);
+        let disabledReason: string | undefined = acc.disabled_reason;
+        let proxyDisabled = Boolean(acc.proxy_disabled);
+        let proxyDisabledReason: string | undefined = acc.proxy_disabled_reason;
+        let validationBlocked = Boolean(acc.validation_blocked);
+        let validationBlockedReason: string | undefined = acc.validation_blocked_reason;
+        let isForbidden = false;
+        let forbiddenReason: string | undefined = undefined;
+
         const detailPath = path.join(shieldDir, 'accounts', `${acc.id}.json`);
         if (fs.existsSync(detailPath)) {
           try {
             const detail = JSON.parse(fs.readFileSync(detailPath, 'utf8'));
+            if (detail.disabled !== undefined) disabled = Boolean(detail.disabled);
+            if (detail.disabled_reason) disabledReason = detail.disabled_reason;
+            if (detail.proxy_disabled !== undefined) proxyDisabled = Boolean(detail.proxy_disabled);
+            if (detail.proxy_disabled_reason) proxyDisabledReason = detail.proxy_disabled_reason;
+            if (detail.validation_blocked !== undefined) validationBlocked = Boolean(detail.validation_blocked);
+            if (detail.validation_blocked_reason) validationBlockedReason = detail.validation_blocked_reason;
+            if (detail.quota?.is_forbidden) {
+              isForbidden = true;
+              forbiddenReason = detail.quota.forbidden_reason;
+            } else if (detail.is_forbidden) {
+              isForbidden = true;
+              forbiddenReason = detail.forbidden_reason;
+            }
+
             if (detail.token) {
               const exp = detail.token.expiry_timestamp || detail.token.expiryTimestamp || 0;
               token = {
@@ -329,6 +360,14 @@ export class ShieldBridge {
           quotas,
           quotaGroups: quotaGroups.length > 0 ? quotaGroups : undefined,
           lastSyncedAt: Date.now(),
+          disabled,
+          disabledReason,
+          proxyDisabled,
+          proxyDisabledReason,
+          validationBlocked,
+          validationBlockedReason,
+          isForbidden,
+          forbiddenReason,
         });
       }
 

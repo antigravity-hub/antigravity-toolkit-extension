@@ -122,6 +122,20 @@ export class AccountService {
       return false;
     }
 
+    if (target.validationBlocked) {
+      vscode.window.showErrorMessage(
+        `⚠️ Cannot switch to ${email}: Google identity verification required. Please verify in Antigravity Shield first.`
+      );
+      return false;
+    }
+
+    if (target.disabled || target.proxyDisabled) {
+      vscode.window.showErrorMessage(
+        `⚠️ Cannot switch to ${email}: Account is turned off or disabled in Antigravity Shield.`
+      );
+      return false;
+    }
+
     // Update active flags
     this.activeEmail = email;
     for (const [key, acc] of this.accounts.entries()) {
@@ -323,10 +337,28 @@ export class AccountService {
   }
 
   /**
+   * Checks whether an account is usable for IDE requests.
+   * Accounts that are disabled, proxy_disabled, validation_blocked (orange in Shield),
+   * or forbidden cannot be used.
+   */
+  public isAccountUsable(account: Account): boolean {
+    if (account.disabled) return false;
+    if (account.proxyDisabled) return false;
+    if (account.validationBlocked) return false;
+    if (account.isForbidden) return false;
+    return true;
+  }
+
+  /**
    * Calculates an accurate health score (0-100) based on Gemini quota groups and models,
    * matching Antigravity Shield desktop telemetry.
    */
   public getAccountHealth(account: Account): number {
+    // If account is disabled, proxy-disabled, validation-blocked (orange in Shield), or forbidden, health is 0!
+    if (!this.isAccountUsable(account)) {
+      return 0;
+    }
+
     // 1. Primary: check Gemini quota group (matching Shield desktop)
     if (account.quotaGroups && account.quotaGroups.length > 0) {
       const geminiGroup = account.quotaGroups.find((g) =>
@@ -385,6 +417,9 @@ export class AccountService {
       if (excludeEmail && a.email.toLowerCase() === excludeEmail.toLowerCase()) {
         return false;
       }
+      if (!this.isAccountUsable(a)) {
+        return false;
+      }
       return true;
     });
 
@@ -424,24 +459,21 @@ export class AccountService {
         return false;
       }
 
-      const currentActive = this.activeEmail;
-      const activeExists = currentActive && fetched.some((a) => a.email.toLowerCase() === currentActive.toLowerCase());
+      // Shield is the authoritative source of truth for active account!
+      // If fetched accounts specify an active account from Shield (acc.isActive), prioritize it!
+      const activeFromShield = fetched.find((a) => a.isActive);
+      const activeTarget = activeFromShield
+        ? activeFromShield.email
+        : (this.activeEmail && fetched.some((a) => a.email.toLowerCase() === this.activeEmail!.toLowerCase())
+            ? this.activeEmail
+            : (fetched.length > 0 ? fetched[0].email : null));
 
       this.accounts.clear();
       for (const acc of fetched) {
-        if (activeExists) {
-          acc.isActive = (acc.email.toLowerCase() === currentActive.toLowerCase());
-        }
+        acc.isActive = Boolean(activeTarget && acc.email.toLowerCase() === activeTarget.toLowerCase());
         this.accounts.set(acc.email, acc);
-        if (acc.isActive) {
-          this.activeEmail = acc.email;
-        }
       }
-
-      if (!this.activeEmail && fetched.length > 0) {
-        this.activeEmail = fetched[0].email;
-        fetched[0].isActive = true;
-      }
+      this.activeEmail = activeTarget;
 
       await this.persistAccounts();
       return true;

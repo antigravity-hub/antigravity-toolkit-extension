@@ -130,17 +130,28 @@ export class AutoSwitchService {
       }
 
       // Determine if active session has reached critical depletion:
+      // 0. Active account became unusable in Shield (verification required or disabled)
       // 1. Overall active account health <= threshold (e.g. 5h limit or weekly exhausted)
       // 2. Any primary model has <= threshold remaining quota
       // 3. OR 5-hour rolling window has <= 2% time remaining (< 6 minutes) and high usage
       let isCritical = false;
       let criticalReason = '';
 
-      const activeHealth = this.accountService.getAccountHealth(activeAccount);
-      if (activeHealth <= threshold) {
+      if (!this.accountService.isAccountUsable(activeAccount)) {
         isCritical = true;
-        criticalReason = `Account quota health depleted (${activeHealth}% remaining)`;
+        if (activeAccount.validationBlocked) {
+          criticalReason = `Active account requires Google verification in Shield (${activeAccount.validationBlockedReason || 'Verification Required'})`;
+        } else if (activeAccount.disabled || activeAccount.proxyDisabled) {
+          criticalReason = `Active account was turned off/disabled in Shield`;
+        } else {
+          criticalReason = `Active account is restricted in Shield`;
+        }
       } else {
+        const activeHealth = this.accountService.getAccountHealth(activeAccount);
+        if (activeHealth <= threshold) {
+          isCritical = true;
+          criticalReason = `Account quota health depleted (${activeHealth}% remaining)`;
+        } else {
         for (const q of quotas) {
           const remaining = typeof q.remainingQuota === 'number' ? q.remainingQuota : Math.max(0, 100 - q.usagePercentage);
           if (remaining <= threshold) {
@@ -164,6 +175,7 @@ export class AutoSwitchService {
           }
         }
       }
+    }
 
       if (!isCritical) {
         return false;

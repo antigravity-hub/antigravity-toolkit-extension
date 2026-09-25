@@ -60,6 +60,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           await this.accountService.syncFromShield();
           this.updateWebview();
           break;
+        case 'verifyInShield':
+          if (message.email) {
+            vscode.window.showWarningMessage(
+              `⚠️ Account ${message.email} requires Google identity verification. Please open Antigravity Shield and complete verification.`,
+              'Sync with Shield'
+            ).then((action) => {
+              if (action === 'Sync with Shield') {
+                this.accountService.syncFromShield().then(() => this.updateWebview());
+              }
+            });
+          }
+          break;
         case 'toggleAutoSwitch':
           const current = this.autoSwitchService.isEnabled();
           await this.autoSwitchService.setEnabled(!current);
@@ -549,28 +561,59 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       </div>
     `;
 
-    // Sort Accounts: Active first, then by health descending, 0% health accounts at bottom
+    // Sort Accounts: Active first, then usable standby accounts sorted by health descending,
+    // and unusable (blocked/disabled) accounts at the bottom
     const sortedAccounts = [...accounts].sort((a, b) => {
       if (a.isActive) return -1;
       if (b.isActive) return 1;
+      const usableA = this.accountService.isAccountUsable(a);
+      const usableB = this.accountService.isAccountUsable(b);
+      if (usableA && !usableB) return -1;
+      if (!usableA && usableB) return 1;
       const hA = this.accountService.getAccountHealth(a);
       const hB = this.accountService.getAccountHealth(b);
       return hB - hA;
     });
 
-    // Find the first standby (non-active) account that has health >= 80% to mark as Best Standby
-    const bestStandbyEmail = sortedAccounts.find((a) => !a.isActive && this.accountService.getAccountHealth(a) >= 80)?.email;
+    // Find the first standby (non-active) usable account that has health >= 80% to mark as Best Standby
+    const bestStandbyEmail = sortedAccounts.find(
+      (a) => !a.isActive && this.accountService.isAccountUsable(a) && this.accountService.getAccountHealth(a) >= 80
+    )?.email;
+
+    // Warning Banner if Active Account in IDE is blocked or disabled in Shield
+    let activeAccountAlertHtml = '';
+    if (activeAccount && !this.accountService.isAccountUsable(activeAccount)) {
+      const isBlocked = Boolean(activeAccount.validationBlocked);
+      const alertTitle = isBlocked ? 'Google Verification Required' : 'Active Account Disabled in Shield';
+      const alertDesc = isBlocked
+        ? `Account <strong>${activeAccount.email}</strong> requires identity verification in Google. Please open Antigravity Shield to verify, or switch to an eligible standby account.`
+        : `Account <strong>${activeAccount.email}</strong> was turned off/disabled in Antigravity Shield. Requests will be rejected by the proxy.`;
+
+      activeAccountAlertHtml = `
+        <div class="active-alert-box ${isBlocked ? 'alert-warning' : 'alert-danger'}">
+          <span class="alert-icon">⚠️</span>
+          <div class="alert-msg">
+            <div class="alert-title">${alertTitle}</div>
+            <div>${alertDesc}</div>
+          </div>
+        </div>
+      `;
+    }
 
     // Compact, Clean Switchboard Rows
     const accountCardsHtml = sortedAccounts
       .map((acc) => {
         const isActive = acc.isActive;
+        const isUsable = this.accountService.isAccountUsable(acc);
+        const isBlocked = Boolean(acc.validationBlocked);
+        const isDisabled = Boolean(acc.disabled || acc.proxyDisabled);
+        const isForbidden = Boolean(acc.isForbidden);
         const health = Math.round(this.accountService.getAccountHealth(acc));
         const initials = acc.email.slice(0, 2).toUpperCase();
         const usedTokens = accountUsageMap.get(acc.email.toLowerCase()) || 0;
         const usedFormatted = usedTokens > 0 ? formatTokenMetric(usedTokens) : '';
 
-        const isBestStandby = !isActive && acc.email === bestStandbyEmail;
+        const isBestStandby = !isActive && isUsable && acc.email === bestStandbyEmail;
 
         // Quota reset & countdown calculation
         let fiveHourRem = 100;
@@ -604,7 +647,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         const is5hDepleted = fiveHourRem <= 0 || health <= 0;
         const isWeeklyDepleted = weeklyRem <= 0;
         const isBothDepleted = is5hDepleted && isWeeklyDepleted;
-        const isDepleted = is5hDepleted || isWeeklyDepleted;
+        const isDepleted = !isBlocked && !isDisabled && !isForbidden && (is5hDepleted || isWeeklyDepleted);
 
         let resetTimerDisplay = fiveHourReset;
         if (isBothDepleted && weeklyReset) {
@@ -619,8 +662,30 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         let statusClass = 'badge-ready';
 
         if (isActive) {
-          statusBadge = 'Active in IDE';
-          statusClass = 'badge-active-ide';
+          if (isBlocked) {
+            statusBadge = 'Active (⚠️ Verify)';
+            statusClass = 'badge-blocked-orange';
+            healthColor = '#f59e0b';
+          } else if (isDisabled) {
+            statusBadge = 'Active (Off in Shield)';
+            statusClass = 'badge-shield-disabled';
+            healthColor = '#64748b';
+          } else {
+            statusBadge = 'Active in IDE';
+            statusClass = 'badge-active-ide';
+          }
+        } else if (isBlocked) {
+          healthColor = '#f59e0b'; // Amber
+          statusBadge = '⚠️ Verify in Shield';
+          statusClass = 'badge-blocked-orange';
+        } else if (isDisabled) {
+          healthColor = '#64748b'; // Slate Gray
+          statusBadge = acc.disabled ? 'Disabled' : 'Proxy Off';
+          statusClass = 'badge-shield-disabled';
+        } else if (isForbidden) {
+          healthColor = '#f43f5e';
+          statusBadge = 'Forbidden 403';
+          statusClass = 'badge-depleted';
         } else if (isDepleted) {
           healthColor = '#f43f5e'; // Crimson Red
           statusBadge = isBothDepleted ? 'Depleted (Weekly)' : 'Depleted (5h)';
@@ -639,8 +704,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           statusClass = 'badge-healthy';
         }
 
+        const meterDisplayWidth = isUsable ? health : 0;
+        const meterColor = isUsable ? healthColor : (isBlocked ? '#f59e0b' : '#64748b');
+
         return `
-        <div class="compact-account-row ${isActive ? 'row-active' : ''} ${isBestStandby ? 'row-best-standby' : ''} ${!isActive && isDepleted ? 'row-depleted' : ''}">
+        <div class="compact-account-row ${isActive ? 'row-active' : ''} ${isBestStandby ? 'row-best-standby' : ''} ${isBlocked ? 'row-blocked' : ''} ${isDisabled ? 'row-disabled' : ''} ${!isActive && isDepleted ? 'row-depleted' : ''}">
           <div class="row-left">
             <div class="compact-avatar-wrapper">
               ${
@@ -657,11 +725,17 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               </div>
               <div class="compact-meter-row">
                 <div class="compact-meter-bg">
-                  <div class="compact-meter-fill" style="width: ${health}%; background: ${healthColor};"></div>
+                  <div class="compact-meter-fill" style="width: ${meterDisplayWidth}%; background: ${meterColor};"></div>
                 </div>
-                <span class="compact-health-val" style="color: ${healthColor};">${health}%</span>
+                <span class="compact-health-val" style="color: ${meterColor};">${isUsable ? health + '%' : (isBlocked ? '⚠️' : 'Off')}</span>
                 ${
-                  health >= 100 && fiveHourRem >= 100
+                  isBlocked
+                    ? `<span class="compact-reset-pill pill-blocked" title="${acc.validationBlockedReason || 'Verification Required in Shield'}">⚠️ Verification Required</span>`
+                    : isDisabled
+                    ? `<span class="compact-reset-pill pill-disabled" title="${acc.proxyDisabledReason || 'Account is turned off/disabled in Shield'}">⊘ Disabled in Shield</span>`
+                    : isForbidden
+                    ? `<span class="compact-reset-pill pill-forbidden" title="${acc.forbiddenReason || 'Forbidden (403)'}">✕ Forbidden</span>`
+                    : health >= 100 && fiveHourRem >= 100
                     ? `<span class="compact-reset-pill" style="color: #10b981; border-color: rgba(16, 185, 129, 0.3);">✓ Ready</span>`
                     : `<span class="compact-reset-pill" title="Resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
                 }
@@ -674,11 +748,23 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             ${
               isActive
                 ? `<span class="pill-active-check">Active ✓</span>`
-                : isDepleted
-                  ? `<span class="pill-depleted-wait" title="Quota resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
-                  : `<button class="btn-compact-switch" onclick="switchAccount(this, '${acc.email}')">
-                      ⚡ Switch
+                : isBlocked
+                  ? `<button class="btn-compact-verify" onclick="verifyInShield('${acc.email}')" title="${acc.validationBlockedReason || 'Verification Required in Shield. Click for instructions.'}">
+                      ⚠️ Verify
                      </button>`
+                  : isDisabled
+                    ? `<button class="btn-compact-disabled" disabled title="Account is turned off / disabled in Antigravity Shield">
+                        Off
+                       </button>`
+                    : isForbidden
+                      ? `<button class="btn-compact-disabled" disabled title="${acc.forbiddenReason || 'Forbidden (403)'}">
+                          403
+                         </button>`
+                      : isDepleted
+                        ? `<span class="pill-depleted-wait" title="Quota resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
+                        : `<button class="btn-compact-switch" onclick="switchAccount(this, '${acc.email}')">
+                            ⚡ Switch
+                           </button>`
             }
           </div>
         </div>
@@ -1655,6 +1741,117 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       cursor: wait !important;
     }
 
+    /* Shield Blocked & Disabled Row States */
+    .compact-account-row.row-blocked {
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      background: rgba(245, 158, 11, 0.04);
+      border-left: 3px solid #f59e0b;
+    }
+
+    .compact-account-row.row-disabled {
+      opacity: 0.55;
+      filter: grayscale(0.5);
+      border-color: rgba(255, 255, 255, 0.05);
+      background: rgba(15, 23, 42, 0.35);
+    }
+
+    .compact-account-row.row-disabled:hover {
+      opacity: 0.8;
+    }
+
+    .badge-blocked-orange {
+      background: rgba(245, 158, 11, 0.18);
+      color: #f59e0b;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+
+    .badge-shield-disabled {
+      background: rgba(100, 116, 139, 0.18);
+      color: #94a3b8;
+      border: 1px solid rgba(100, 116, 139, 0.3);
+    }
+
+    .compact-reset-pill.pill-blocked {
+      color: #fbbf24;
+      background: rgba(245, 158, 11, 0.12);
+      border-color: rgba(245, 158, 11, 0.3);
+    }
+
+    .compact-reset-pill.pill-disabled {
+      color: #94a3b8;
+      background: rgba(100, 116, 139, 0.1);
+      border-color: rgba(100, 116, 139, 0.25);
+    }
+
+    .compact-reset-pill.pill-forbidden {
+      color: #f43f5e;
+      background: rgba(244, 63, 94, 0.1);
+      border-color: rgba(244, 63, 94, 0.3);
+    }
+
+    .btn-compact-verify {
+      background: rgba(245, 158, 11, 0.14);
+      border: 1px solid rgba(245, 158, 11, 0.45);
+      color: #fbbf24;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-compact-verify:hover {
+      background: rgba(245, 158, 11, 0.26);
+      border-color: #f59e0b;
+      box-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+    }
+
+    .btn-compact-disabled {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: #64748b;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    .active-alert-box {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .active-alert-box.alert-warning {
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      color: #fef3c7;
+    }
+
+    .active-alert-box.alert-danger {
+      background: rgba(244, 63, 94, 0.12);
+      border: 1px solid rgba(244, 63, 94, 0.35);
+      color: #ffe4e6;
+    }
+
+    .active-alert-box .alert-icon {
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    .active-alert-box .alert-title {
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+
     /* Project Timeline Graph (Tab 2) */
     .project-cluster-card {
       background: var(--card-bg);
@@ -2432,6 +2629,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         <span style="font-size: 9px;">Zero-Reload</span>
       </div>
 
+      ${activeAccountAlertHtml}
+
       <div class="accounts-grid">
         ${accountCardsHtml || '<div style="opacity:0.6; text-align:center; padding:8px;">No accounts stored</div>'}
       </div>
@@ -2704,6 +2903,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       });
 
       vscode.postMessage({ command: 'switchAccount', email: email });
+    }
+
+    function verifyInShield(email) {
+      vscode.postMessage({ command: 'verifyInShield', email: email });
     }
 
     function syncShield() {
