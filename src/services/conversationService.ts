@@ -37,12 +37,58 @@ export class ConversationService {
     for (const bDir of brainDirs) {
       if (!fs.existsSync(bDir)) continue;
       try {
-        const watcher = fs.watch(bDir, { recursive: false }, () => {
+        const watcher = fs.watch(bDir, { recursive: true }, () => {
           this.scheduleWatchRefresh();
         });
         this.brainWatchers.push(watcher);
       } catch {
-        // ignore filesystem watch limitations
+        try {
+          const watcher = fs.watch(bDir, { recursive: false }, () => {
+            this.scheduleWatchRefresh();
+          });
+          this.brainWatchers.push(watcher);
+        } catch {
+          // ignore filesystem watch limitations
+        }
+      }
+    }
+
+    // Watch Antigravity conversations database directory (~/.gemini/antigravity-ide/conversations)
+    const homeDir = os.homedir();
+    const convDirs = [
+      path.join(homeDir, '.gemini', 'antigravity-ide', 'conversations'),
+      path.join(homeDir, '.gemini', 'antigravity', 'conversations'),
+      path.join(homeDir, '.gemini', 'conversations'),
+    ];
+    for (const cDir of convDirs) {
+      if (fs.existsSync(cDir)) {
+        try {
+          const w = fs.watch(cDir, { recursive: false }, () => {
+            this.scheduleWatchRefresh();
+          });
+          this.brainWatchers.push(w);
+        } catch {}
+      }
+    }
+
+    // Watch globalStorage state.vscdb directory
+    const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
+    if (appData) {
+      const gsDirs = [
+        path.join(appData, 'Antigravity IDE', 'User', 'globalStorage'),
+        path.join(appData, 'Antigravity', 'User', 'globalStorage'),
+      ];
+      for (const gsDir of gsDirs) {
+        if (fs.existsSync(gsDir)) {
+          try {
+            const w = fs.watch(gsDir, { recursive: false }, (_event, filename) => {
+              if (!filename || filename.toLowerCase().includes('state.vscdb')) {
+                this.scheduleWatchRefresh();
+              }
+            });
+            this.brainWatchers.push(w);
+          } catch {}
+        }
       }
     }
   }
@@ -53,8 +99,9 @@ export class ConversationService {
     }
     this.watchDebounceTimer = setTimeout(() => {
       this.lastSessionsScan = 0;
+      this.lastTrajectoryLoad = 0;
       this.refresh();
-    }, 1200);
+    }, 500);
   }
 
   public disposeWatchers(): void {
@@ -333,6 +380,7 @@ export class ConversationService {
    * (antigravityUnifiedStateSync.trajectorySummaries) so that Antigravity IDE natively recognizes it.
    */
   public injectTrajectorySummary(sessionId: string, title: string, workspacePath = ''): boolean {
+    if (!sessionId || this.isPlaceholderTitle(title)) return false;
     try {
       const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
       const ideDbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
@@ -352,15 +400,29 @@ export class ConversationService {
       const currentVal = (qRes.stdout || '').trim();
       const currentBuf = currentVal ? Buffer.from(currentVal, 'base64') : Buffer.alloc(0);
 
-      // Check if session ID already exists in database
+      let filteredBuf = currentBuf;
+      // If session ID already exists in database, filter out the old entry so we can replace it with the new real title
       if (currentBuf.includes(Buffer.from(sessionId, 'utf8'))) {
-        this.trajectoryMap.set(sessionId, {
-          title,
-          workspace: workspacePath ? path.basename(workspacePath) : undefined,
-          workspaceFullPath: workspacePath || undefined,
-          updatedAt: Date.now(),
-        });
-        return true;
+        try {
+          const top = this.parseProto(currentBuf);
+          const filteredEntries: Buffer[] = [];
+          for (const f of top) {
+            if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
+            const sub = this.parseProto(f.val);
+            let existingUuid = '';
+            for (const s of sub) {
+              if (s.fieldNum === 1 && s.type === 'bytes') {
+                existingUuid = s.val.toString('utf8');
+              }
+            }
+            if (existingUuid !== sessionId) {
+              filteredEntries.push(this.encodeBytesField(1, f.val));
+            }
+          }
+          filteredBuf = Buffer.concat(filteredEntries);
+        } catch {
+          filteredBuf = currentBuf;
+        }
       }
 
       // Convert workspacePath to file URI if provided
@@ -374,7 +436,7 @@ export class ConversationService {
       const summaryBytes = this.serializeCascadeSummary(sessionId, title, wsUri, Date.now());
       const newEntry = this.serializeTrajectoryEntry(sessionId, summaryBytes);
 
-      const mergedBuf = Buffer.concat([newEntry, currentBuf]);
+      const mergedBuf = Buffer.concat([newEntry, filteredBuf]);
       const mergedB64 = mergedBuf.toString('base64');
 
       const updateSql = `UPDATE ItemTable SET value = '${mergedB64}' WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';\n`;
@@ -520,7 +582,7 @@ export class ConversationService {
 
   /**
    * Sanitizes any raw title, prompt, or plan header into a clean, concise, human-readable title.
-   * Eliminates markdown tokens, XML tags, multiple lines, and truncates neatly at word boundaries.
+   * Eliminates markdown tokens, XML tags, slash commands, multiple lines, and truncates neatly at word boundaries.
    */
   private sanitizeTitle(raw: string, maxLength = 52): string {
     if (!raw) return '';
@@ -537,6 +599,7 @@ export class ConversationService {
       .trim();
 
     cleaned = cleaned
+      .replace(/^\/(?:plan|goal|schedule|grill-me|learn|task)\s+/i, '')
       .replace(/^(?:task|original_task|implementation plan|goal|plan)[:\-–—\s]+/i, '')
       .trim();
 
@@ -561,12 +624,115 @@ export class ConversationService {
   }
 
   /**
+   * Checks if a title is a dummy/placeholder title rather than a genuine human or AI-summarized topic.
+   */
+  private isPlaceholderTitle(title: string | undefined): boolean {
+    if (!title) return true;
+    const t = title.trim();
+    return (
+      /^Session\s+[0-9a-f]{6,12}$/i.test(t) ||
+      t.toLowerCase() === 'empty conversation thread' ||
+      t.toLowerCase() === 'new chat' ||
+      t.toLowerCase() === 'untitled'
+    );
+  }
+
+  /**
+   * Fast extractor for official conversation title from ~/.gemini/antigravity-ide/conversations/<convId>.db.
+   * Antigravity IDE writes the exact AI-generated title to steps WHERE step_type = 23 (compaction/title checkpoint).
+   */
+  public extractOfficialTitle(convId: string): string | null {
+    try {
+      const homeDir = os.homedir();
+      const dbPaths = [
+        path.join(homeDir, '.gemini', 'antigravity-ide', 'conversations', `${convId}.db`),
+        path.join(homeDir, '.gemini', 'antigravity', 'conversations', `${convId}.db`),
+        path.join(homeDir, '.gemini', 'conversations', `${convId}.db`),
+      ];
+      let dbPath = '';
+      for (const p of dbPaths) {
+        if (fs.existsSync(p)) {
+          dbPath = p;
+          break;
+        }
+      }
+      if (!dbPath) return null;
+
+      const qRes = child_process.spawnSync(
+        'sqlite3',
+        [dbPath, 'SELECT CAST(step_payload AS BLOB) FROM steps WHERE step_type = 23 LIMIT 1;'],
+        { maxBuffer: 10 * 1024 * 1024, windowsHide: true, timeout: 1500 }
+      );
+      const buf = qRes.stdout;
+      if (!buf || buf.length === 0) return null;
+
+      // Scan for UUID tag (0x22 with len 36) followed by Title tag (0x22 with title length)
+      for (let i = 0; i < buf.length - 10; i++) {
+        if (buf[i] === 0x22) {
+          const len = buf[i + 1];
+          if (len === 36) {
+            const uStr = buf.slice(i + 2, i + 2 + 36).toString('utf8');
+            if (uStr.toLowerCase() === convId.toLowerCase()) {
+              let j = i + 2 + 36;
+              while (j < Math.min(i + 500, buf.length - 2)) {
+                if (buf[j] === 0x22) {
+                  const tLen = buf[j + 1];
+                  if (tLen > 0 && tLen < 200 && j + 2 + tLen <= buf.length) {
+                    const title = buf.slice(j + 2, j + 2 + tLen).toString('utf8');
+                    if (!title.includes('\n') && !title.includes('\r')) {
+                      const clean = title.trim();
+                      if (clean && clean.toLowerCase() !== 'empty conversation thread') {
+                        return clean;
+                      }
+                    }
+                  }
+                }
+                j++;
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore db read failure
+    }
+    return null;
+  }
+
+  /**
+   * Scans brain directory for implementation_plan.md or any domain-specific *_plan.md.
+   */
+  private extractPlanTitle(bDir: string, convId: string): string {
+    const convDir = path.join(bDir, convId);
+    if (!fs.existsSync(convDir)) return '';
+    try {
+      // 1. Primary implementation plan
+      const primaryPlan = path.join(convDir, 'implementation_plan.md');
+      if (fs.existsSync(primaryPlan)) {
+        const head = fs.readFileSync(primaryPlan, 'utf8').split('\n')[0] || '';
+        if (head.startsWith('#')) return this.sanitizeTitle(head);
+      }
+      // 2. Scan other markdown plans
+      const entries = fs.readdirSync(convDir);
+      for (const e of entries) {
+        if (e.endsWith('.md') && (e.includes('plan') || e.includes('arch') || e.includes('spec') || e.includes('design'))) {
+          const p = path.join(convDir, e);
+          const head = fs.readFileSync(p, 'utf8').split('\n')[0] || '';
+          if (head.startsWith('#')) return this.sanitizeTitle(head);
+        }
+      }
+    } catch {}
+    return '';
+  }
+
+  /**
    * Scans and returns all discovered conversations sorted by latest activity.
    * Internal subagents, background workers, and robotic prompts are filtered out.
    */
   public async getConversations(forceRefresh = false): Promise<ConversationSession[]> {
     const now = Date.now();
-    if (!forceRefresh && this.cachedSessions.length > 0 && now - this.lastSessionsScan < 15000) {
+    const hasAnyPlaceholder = this.cachedSessions.some((s) => this.isPlaceholderTitle(s.title));
+    if (!forceRefresh && !hasAnyPlaceholder && this.cachedSessions.length > 0 && now - this.lastSessionsScan < 15000) {
       return this.cachedSessions;
     }
 
@@ -619,6 +785,7 @@ export class ConversationService {
       let tokenEstimate = 0;
       let mtime = traj.updatedAt || 0;
       let previewText = '';
+      let userPromptTitle = '';
 
       for (const bDir of brainDirs) {
         const compact = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
@@ -634,7 +801,7 @@ export class ConversationService {
             stepCount = lines.length;
             tokenEstimate = Math.round(content.length / 3.8);
 
-            // Extract preview text from early user input
+            // Extract preview text and first user prompt from early user input
             for (const line of lines.slice(0, 25)) {
               try {
                 const obj = JSON.parse(line);
@@ -642,8 +809,12 @@ export class ConversationService {
                   let raw = String(obj.content);
                   const reqMatch = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
                   if (reqMatch && reqMatch[1]) raw = reqMatch[1];
-                  previewText = raw.replace(/<[^>]+>/g, '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 90);
-                  break;
+                  const clean = raw.replace(/<[^>]+>/g, '').replace(/[\r\n\t]+/g, ' ').trim();
+                  if (clean && !isSubagentText(clean)) {
+                    if (!previewText) previewText = clean.slice(0, 90);
+                    if (!userPromptTitle) userPromptTitle = clean;
+                    break;
+                  }
                 }
               } catch {}
             }
@@ -660,32 +831,36 @@ export class ConversationService {
         }
       }
 
-      // Check implementation plan title for clean descriptive goals
+      // 1. Check implementation plan title for clean descriptive goals
       let planTitle = '';
       for (const bDir of brainDirs) {
-        const planFile = path.join(bDir, convId, 'implementation_plan.md');
-        if (fs.existsSync(planFile)) {
-          try {
-            const head = fs.readFileSync(planFile, 'utf8').split('\n')[0] || '';
-            if (head.startsWith('#')) planTitle = this.sanitizeTitle(head);
-          } catch {}
-          break;
-        }
+        planTitle = this.extractPlanTitle(bDir, convId);
+        if (planTitle) break;
       }
 
-      // Sanitize title
-      let finalTitle = this.sanitizeTitle(traj.title);
-      if (
-        finalTitle.includes('?') ||
-        finalTitle.includes('؟') ||
-        finalTitle.length > 48 ||
-        finalTitle.startsWith('file:') ||
-        finalTitle.includes('file:///')
-      ) {
-        if (planTitle) finalTitle = planTitle;
+      // 2. Check official AI-generated title from Antigravity conversation DB step 23
+      const officialDbTitle = this.extractOfficialTitle(convId);
+      const trajTitle = this.sanitizeTitle(traj.title);
+
+      let finalTitle = '';
+      if (officialDbTitle) {
+        finalTitle = this.sanitizeTitle(officialDbTitle);
+      } else if (!this.isPlaceholderTitle(trajTitle)) {
+        finalTitle = trajTitle;
       }
-      if (!finalTitle || finalTitle.startsWith('file:') || finalTitle.includes('file:///')) {
-        finalTitle = planTitle || (previewText ? this.sanitizeTitle(previewText) : `Session ${convId.slice(0, 8)}`);
+
+      // If still placeholder or invalid file path, fallback to plan or user prompt
+      if (this.isPlaceholderTitle(finalTitle) || finalTitle.includes('file:') || finalTitle.includes('file:///')) {
+        finalTitle = planTitle || (userPromptTitle ? this.sanitizeTitle(userPromptTitle) : (previewText ? this.sanitizeTitle(previewText) : ''));
+      }
+
+      if (!finalTitle) {
+        finalTitle = `Session ${convId.slice(0, 8)}`;
+      }
+
+      // Auto-heal state.vscdb: if finalTitle is a real title and traj.title was a placeholder
+      if (!this.isPlaceholderTitle(finalTitle) && this.isPlaceholderTitle(traj.title)) {
+        this.injectTrajectorySummary(convId, finalTitle, traj.workspaceFullPath || '');
       }
 
       // Filter if somehow a subagent task was in trajectory
@@ -821,23 +996,24 @@ export class ConversationService {
             if (isSubagent) continue;
             if (!previewText && stepCount <= 1) continue;
 
-            // Check implementation plan title
+            // 1. Official AI-generated title from Antigravity conversation DB step 23
+            const officialDbTitle = this.extractOfficialTitle(convId);
+            // 2. Implementation plan title
             let planTitle = '';
-            const planFile = path.join(bDir, convId, 'implementation_plan.md');
-            if (fs.existsSync(planFile)) {
-              try {
-                const head = fs.readFileSync(planFile, 'utf8').split('\n')[0] || '';
-                if (head.startsWith('#')) planTitle = this.sanitizeTitle(head);
-              } catch {}
+            for (const d of brainDirs) {
+              planTitle = this.extractPlanTitle(d, convId);
+              if (planTitle) break;
             }
 
-            let finalTitle = planTitle;
-            if (!finalTitle && userPromptTitle) {
+            let finalTitle = '';
+            if (officialDbTitle) {
+              finalTitle = this.sanitizeTitle(officialDbTitle);
+            } else if (planTitle) {
+              finalTitle = planTitle;
+            } else if (userPromptTitle) {
               finalTitle = this.sanitizeTitle(userPromptTitle);
-              if (finalTitle.length > 50) {
-                finalTitle = finalTitle.slice(0, 48) + '...';
-              }
             }
+
             if (!finalTitle) {
               finalTitle = `Session ${convId.slice(0, 8)}`;
             }
@@ -893,8 +1069,9 @@ export class ConversationService {
               minute: '2-digit',
             });
 
-            // Autonomous session auto-healing: ensure recovered sessions are registered in state.vscdb
-            if (!this.trajectoryMap.has(convId) && finalTitle) {
+            // Autonomous session auto-healing: ONLY inject if it's a genuine title!
+            // Never inject placeholder "Session <id>" into state.vscdb!
+            if (!this.isPlaceholderTitle(finalTitle)) {
               this.injectTrajectorySummary(convId, finalTitle, workspacePath || '');
             }
 
@@ -1177,6 +1354,17 @@ export class ConversationService {
    * 4. Automatically executes: Paste -> wait -> Down Arrow -> wait -> Enter.
    */
   public async openConversation(session: ConversationSession): Promise<void> {
+    // If session title is placeholder, resolve on-the-fly from official DB or preview before copying!
+    if (this.isPlaceholderTitle(session.title)) {
+      const realTitle =
+        this.extractOfficialTitle(session.id) ||
+        (session.previewText ? this.sanitizeTitle(session.previewText) : '');
+      if (realTitle && !this.isPlaceholderTitle(realTitle)) {
+        session.title = realTitle;
+        this.injectTrajectorySummary(session.id, realTitle, session.workspacePath || '');
+      }
+    }
+
     const cleanTitle = session.title.replace(/[\r\n\t]+/g, ' ').trim();
 
     // 1. If conversation belongs to another project, automatically open in a new window!
