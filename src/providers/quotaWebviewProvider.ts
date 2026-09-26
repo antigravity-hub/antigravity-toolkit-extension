@@ -3046,87 +3046,116 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         .replace(/'/g, '&#039;');
     }
 
+    var titleSearchDebounceTimer = null;
+    var lastAppliedTitleFilter = null;
+
     function handleTitleSearch(value) {
-      activeTitleFilter = (value || '').trim();
+      var val = (value || '').trim();
       var clearBtn = document.getElementById('btn-clear-title');
-      if (clearBtn) clearBtn.style.display = activeTitleFilter ? 'inline-block' : 'none';
+      if (clearBtn) clearBtn.style.display = val ? 'inline-block' : 'none';
 
-      var q = activeTitleFilter.toLowerCase();
+      if (titleSearchDebounceTimer) {
+        clearTimeout(titleSearchDebounceTimer);
+        titleSearchDebounceTimer = null;
+      }
 
-      // 1. Filter nodes in Workspace View
-      var wsNodes = document.querySelectorAll('#scope-workspace-view .timeline-node');
-      var wsMatchCount = 0;
-      wsNodes.forEach(function(node) {
-        var titleEl = node.querySelector('.node-title');
-        var origTitle = titleEl ? (titleEl.getAttribute('data-original-title') || titleEl.innerText) : '';
-        if (titleEl && !titleEl.getAttribute('data-original-title')) {
-          titleEl.setAttribute('data-original-title', origTitle);
-        }
+      if (!val) {
+        applyTitleFilter('');
+        return;
+      }
 
-        var matches = !q || origTitle.toLowerCase().indexOf(q) !== -1;
-        node.style.display = matches ? 'flex' : 'none';
-        if (matches) {
-          wsMatchCount++;
-          if (titleEl) {
-            if (q) {
-              var regex = new RegExp('(' + escapeRegex(q) + ')', 'gi');
-              titleEl.innerHTML = escapeHtml(origTitle).replace(regex, '<mark class="search-highlight">$1</mark>');
-            } else {
-              titleEl.innerText = origTitle;
-            }
-          }
-        }
-      });
+      // 140ms debounce to prevent synchronous layout thrashing on every keystroke
+      titleSearchDebounceTimer = setTimeout(function() {
+        applyTitleFilter(val);
+      }, 140);
+    }
 
-      // 2. Filter nodes and cards in All Projects View
-      var projectCards = document.querySelectorAll('#scope-all-view .project-cluster-card');
-      projectCards.forEach(function(card) {
-        var pName = card.getAttribute('data-project-name') || '';
-        var nodes = card.querySelectorAll('.timeline-node');
-        var cardMatchCount = 0;
+    function applyTitleFilter(value) {
+      var cleanVal = (value || '').trim();
+      if (cleanVal === lastAppliedTitleFilter) return;
+      lastAppliedTitleFilter = cleanVal;
+      activeTitleFilter = cleanVal;
 
-        nodes.forEach(function(node) {
+      window.requestAnimationFrame(function() {
+        var q = cleanVal.toLowerCase();
+        var regex = q ? new RegExp('(' + escapeRegex(q) + ')', 'gi') : null;
+
+        // 1. Filter nodes in Workspace View
+        var wsNodes = document.querySelectorAll('#scope-workspace-view .timeline-node');
+        for (var i = 0; i < wsNodes.length; i++) {
+          var node = wsNodes[i];
           var titleEl = node.querySelector('.node-title');
           var origTitle = titleEl ? (titleEl.getAttribute('data-original-title') || titleEl.innerText) : '';
           if (titleEl && !titleEl.getAttribute('data-original-title')) {
             titleEl.setAttribute('data-original-title', origTitle);
           }
 
-          var matches = !q || origTitle.toLowerCase().indexOf(q) !== -1 || pName.indexOf(q) !== -1;
+          var matches = !q || origTitle.toLowerCase().indexOf(q) !== -1;
           node.style.display = matches ? 'flex' : 'none';
-          if (matches) {
-            cardMatchCount++;
-            if (titleEl) {
-              if (q && origTitle.toLowerCase().indexOf(q) !== -1) {
-                var regex = new RegExp('(' + escapeRegex(q) + ')', 'gi');
-                titleEl.innerHTML = escapeHtml(origTitle).replace(regex, '<mark class="search-highlight">$1</mark>');
-              } else {
-                titleEl.innerText = origTitle;
+          if (matches && titleEl) {
+            if (q) {
+              titleEl.innerHTML = escapeHtml(origTitle).replace(regex, '<mark class="search-highlight">$1</mark>');
+            } else {
+              titleEl.innerText = origTitle;
+            }
+          }
+        }
+
+        // 2. Filter nodes and cards in All Projects View
+        var projectCards = document.querySelectorAll('#scope-all-view .project-cluster-card');
+        for (var c = 0; c < projectCards.length; c++) {
+          var card = projectCards[c];
+          var pName = card.getAttribute('data-project-name') || '';
+          var nodes = card.querySelectorAll('.timeline-node');
+          var cardMatchCount = 0;
+
+          for (var j = 0; j < nodes.length; j++) {
+            var n = nodes[j];
+            var tEl = n.querySelector('.node-title');
+            var oTitle = tEl ? (tEl.getAttribute('data-original-title') || tEl.innerText) : '';
+            if (tEl && !tEl.getAttribute('data-original-title')) {
+              tEl.setAttribute('data-original-title', oTitle);
+            }
+
+            var nMatches = !q || oTitle.toLowerCase().indexOf(q) !== -1 || pName.toLowerCase().indexOf(q) !== -1;
+            n.style.display = nMatches ? 'flex' : 'none';
+            if (nMatches) {
+              cardMatchCount++;
+              if (tEl) {
+                if (q && oTitle.toLowerCase().indexOf(q) !== -1) {
+                  tEl.innerHTML = escapeHtml(oTitle).replace(regex, '<mark class="search-highlight">$1</mark>');
+                } else {
+                  tEl.innerText = oTitle;
+                }
               }
             }
           }
-        });
 
-        if (!q) {
-          card.style.display = '';
-        } else {
-          card.style.display = cardMatchCount > 0 ? '' : 'none';
-          if (cardMatchCount > 0) {
-            var body = card.querySelector('.project-body');
-            var chevron = card.querySelector('.project-chevron');
-            if (body) body.style.display = '';
-            if (chevron) chevron.innerText = '▼';
-            card.classList.add('is-expanded');
-            card.classList.remove('is-collapsed');
+          if (!q) {
+            card.style.display = '';
+          } else {
+            card.style.display = cardMatchCount > 0 ? '' : 'none';
+            if (cardMatchCount > 0) {
+              var body = card.querySelector('.project-body');
+              var chevron = card.querySelector('.project-chevron');
+              if (body) body.style.display = '';
+              if (chevron) chevron.innerText = '▼';
+              card.classList.add('is-expanded');
+              card.classList.remove('is-collapsed');
+            }
           }
         }
       });
     }
 
     function clearTitleSearch() {
+      if (titleSearchDebounceTimer) {
+        clearTimeout(titleSearchDebounceTimer);
+        titleSearchDebounceTimer = null;
+      }
       var input = document.getElementById('search-titles-input');
       if (input) input.value = '';
-      handleTitleSearch('');
+      applyTitleFilter('');
     }
 
     var contentSearchDebounceTimer = null;
@@ -3136,6 +3165,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       var clearBtn = document.getElementById('btn-clear-content');
       if (clearBtn) clearBtn.style.display = query ? 'inline-block' : 'none';
 
+      if (contentSearchDebounceTimer) {
+        clearTimeout(contentSearchDebounceTimer);
+        contentSearchDebounceTimer = null;
+      }
+
       if (!query) {
         clearContentSearch();
         return;
@@ -3144,17 +3178,17 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       var searchLbl = document.getElementById('btn-search-content-label');
       if (searchLbl) searchLbl.innerHTML = '<span class="node-btn-spinner"></span>';
 
-      if (contentSearchDebounceTimer) {
-        clearTimeout(contentSearchDebounceTimer);
-      }
-
-      // Live search debounced at 250ms
+      // 380ms debounce so user can finish typing word/phrase before launching disk search
       contentSearchDebounceTimer = setTimeout(function() {
         executeContentSearch();
-      }, 250);
+      }, 380);
     }
 
     function executeContentSearch() {
+      if (contentSearchDebounceTimer) {
+        clearTimeout(contentSearchDebounceTimer);
+        contentSearchDebounceTimer = null;
+      }
       var input = document.getElementById('search-content-input');
       var query = (input ? input.value : '').trim();
       if (!query) {
