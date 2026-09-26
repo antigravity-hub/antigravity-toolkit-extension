@@ -33,6 +33,35 @@ export class ShieldBridge {
     this.detectedBaseUrl = null;
   }
 
+  public static safeQuotaPercentage(fraction?: number | null): number {
+    if (fraction === undefined || fraction === null || isNaN(fraction)) return 0;
+    if (fraction >= 1.0) return 100;
+    if (fraction <= 0.0) return 0;
+    const raw = fraction * 100;
+    if (raw > 99) return 99;
+    return Math.round(raw);
+  }
+
+  public static formatPaddedCountdown(durationMs: number, isWeekly = false): string {
+    const totalSeconds = Math.floor(Math.max(0, durationMs) / 1000);
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const totalHours = Math.floor(totalSeconds / 3600);
+    const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+
+    if (isWeekly && totalHours >= 24) {
+      const days = Math.floor(totalHours / 24);
+      const remHours = totalHours % 24;
+      return `${days}d ${remHours}h`;
+    }
+
+    if (totalHours > 0) {
+      const minutes = totalMinutes % 60;
+      return `${pad(totalHours)}h ${pad(minutes)}m`;
+    }
+
+    return `${pad(totalMinutes)}m`;
+  }
+
   public async getBaseUrl(): Promise<string> {
     if (this.detectedBaseUrl) {
       const alive = await this.pingUrl(new URL('/api/health', this.detectedBaseUrl), 300);
@@ -286,27 +315,26 @@ export class ShieldBridge {
 
                   if (Array.isArray(g.buckets)) {
                     for (const b of g.buckets) {
+                      const isWeekly = b.window === 'weekly';
                       const remaining = typeof b.remaining_fraction === 'number'
-                        ? Math.round(b.remaining_fraction * 100)
+                        ? ShieldBridge.safeQuotaPercentage(b.remaining_fraction)
                         : typeof b.percentage === 'number'
-                        ? b.percentage
+                        ? (b.percentage > 99 && b.percentage < 100 ? 99 : b.percentage)
                         : 100;
                       const resetMs = b.reset_time ? new Date(b.reset_time).getTime() : Date.now() + 5 * 3600 * 1000;
                       const durationMs = Math.max(0, resetMs - Date.now());
-                      const hours = Math.floor(durationMs / (1000 * 60 * 60));
-                      const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
-                      const resetFormatted = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+                      const resetFormatted = ShieldBridge.formatPaddedCountdown(durationMs, isWeekly);
 
                       const bucket: import('../types').QuotaBucket = {
                         bucketId: b.bucket_id || b.window,
-                        window: b.window === 'weekly' ? 'weekly' : '5h',
+                        window: isWeekly ? 'weekly' : '5h',
                         remainingPercentage: remaining,
                         resetTimeMs: resetMs,
                         resetTimeFormatted: resetFormatted,
-                        displayName: b.display_name || (b.window === 'weekly' ? 'Weekly Limit' : '5-Hour Limit'),
+                        displayName: b.display_name || (isWeekly ? 'Weekly Limit' : '5-Hour Limit'),
                       };
 
-                      if (b.window === 'weekly') {
+                      if (isWeekly) {
                         weeklyBucket = bucket;
                       } else {
                         fiveHourBucket = bucket;
@@ -329,9 +357,7 @@ export class ShieldBridge {
                   const usage = Math.max(0, 100 - remaining);
                   const resetMs = m.reset_time ? new Date(m.reset_time).getTime() : Date.now() + 5 * 3600 * 1000;
                   const durationMs = Math.max(0, resetMs - Date.now());
-                  const hours = Math.floor(durationMs / (1000 * 60 * 60));
-                  const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
-                  const resetFormatted = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+                  const resetFormatted = ShieldBridge.formatPaddedCountdown(durationMs, false);
 
                   return {
                     modelId: m.name || m.display_name,
