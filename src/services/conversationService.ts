@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as child_process from 'child_process';
+import * as util from 'util';
 import { ConversationSession, ConversationStep, ContentSearchResult, ContentSearchSnippet } from '../types';
 
 export class ConversationService {
@@ -14,6 +15,7 @@ export class ConversationService {
   private lastTrajectoryLoad = 0;
   private cachedSessions: ConversationSession[] = [];
   private lastSessionsScan = 0;
+  private officialTitleCache: Map<string, string> = new Map();
   private brainWatchers: fs.FSWatcher[] = [];
   private watchDebounceTimer: NodeJS.Timeout | undefined;
 
@@ -631,6 +633,7 @@ export class ConversationService {
     const t = title.trim();
     return (
       /^Session\s+[0-9a-f]{6,12}$/i.test(t) ||
+      /^[0-9a-f]{12,64}$/i.test(t) ||
       t.toLowerCase() === 'empty conversation thread' ||
       t.toLowerCase() === 'new chat' ||
       t.toLowerCase() === 'untitled'
@@ -638,56 +641,88 @@ export class ConversationService {
   }
 
   /**
-   * Fast extractor for official conversation title from ~/.gemini/antigravity-ide/conversations/<convId>.db.
-   * Antigravity IDE writes the exact AI-generated title to steps WHERE step_type = 23 (compaction/title checkpoint).
+   * High-precision, multi-tier extractor for official conversation title from:
+   * 1. In-memory cache (0ms)
+   * 2. Antigravity annotations (*.pbtxt) (0.05ms)
+   * 3. Antigravity conversation DB step_type = 23 (compaction/title checkpoint)
    */
-  public extractOfficialTitle(convId: string): string | null {
-    try {
-      const homeDir = os.homedir();
-      const dbPaths = [
-        path.join(homeDir, '.gemini', 'antigravity-ide', 'conversations', `${convId}.db`),
-        path.join(homeDir, '.gemini', 'antigravity', 'conversations', `${convId}.db`),
-        path.join(homeDir, '.gemini', 'conversations', `${convId}.db`),
-      ];
-      let dbPath = '';
-      for (const p of dbPaths) {
-        if (fs.existsSync(p)) {
-          dbPath = p;
-          break;
-        }
-      }
-      if (!dbPath) return null;
+  public async extractOfficialTitle(convId: string): Promise<string | null> {
+    if (!convId) return null;
+    if (this.officialTitleCache.has(convId)) {
+      return this.officialTitleCache.get(convId)!;
+    }
 
-      const qRes = child_process.spawnSync(
+    const homeDir = os.homedir();
+
+    // 1. FAST TIER: Check Antigravity annotations (*.pbtxt) - ultra fast (<0.1ms)
+    const annotationDirs = [
+      path.join(homeDir, '.gemini', 'antigravity', 'annotations'),
+      path.join(homeDir, '.gemini', 'antigravity-ide', 'annotations'),
+      path.join(homeDir, '.gemini', 'antigravity-cli', 'annotations'),
+    ];
+    for (const ad of annotationDirs) {
+      const p = path.join(ad, `${convId}.pbtxt`);
+      if (fs.existsSync(p)) {
+        try {
+          const content = fs.readFileSync(p, 'utf8');
+          const match = content.match(/title:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+          if (match && match[1]) {
+            const clean = match[1].replace(/\\"/g, '"').replace(/\\n/g, ' ').trim();
+            if (clean && !this.isPlaceholderTitle(clean)) {
+              this.officialTitleCache.set(convId, clean);
+              return clean;
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // 2. AUTHORITATIVE TIER: Conversation DB step_type = 23 (compaction/title checkpoint)
+    const dbPaths = [
+      path.join(homeDir, '.gemini', 'antigravity-ide', 'conversations', `${convId}.db`),
+      path.join(homeDir, '.gemini', 'antigravity', 'conversations', `${convId}.db`),
+      path.join(homeDir, '.gemini', 'conversations', `${convId}.db`),
+    ];
+    let dbPath = '';
+    for (const p of dbPaths) {
+      if (fs.existsSync(p)) {
+        dbPath = p;
+        break;
+      }
+    }
+    if (!dbPath) return null;
+
+    try {
+      const { stdout } = await util.promisify(child_process.execFile)(
         'sqlite3',
         [dbPath, 'SELECT CAST(step_payload AS BLOB) FROM steps WHERE step_type = 23 LIMIT 1;'],
-        { maxBuffer: 10 * 1024 * 1024, windowsHide: true, timeout: 1500 }
+        { encoding: 'buffer', maxBuffer: 10 * 1024 * 1024, windowsHide: true, timeout: 2500 }
       );
-      const buf = qRes.stdout;
-      if (!buf || buf.length === 0) return null;
-
-      // Scan for UUID tag (0x22 with len 36) followed by Title tag (0x22 with title length)
-      for (let i = 0; i < buf.length - 10; i++) {
-        if (buf[i] === 0x22) {
-          const len = buf[i + 1];
-          if (len === 36) {
-            const uStr = buf.slice(i + 2, i + 2 + 36).toString('utf8');
-            if (uStr.toLowerCase() === convId.toLowerCase()) {
-              let j = i + 2 + 36;
-              while (j < Math.min(i + 500, buf.length - 2)) {
-                if (buf[j] === 0x22) {
-                  const tLen = buf[j + 1];
-                  if (tLen > 0 && tLen < 200 && j + 2 + tLen <= buf.length) {
-                    const title = buf.slice(j + 2, j + 2 + tLen).toString('utf8');
-                    if (!title.includes('\n') && !title.includes('\r')) {
-                      const clean = title.trim();
-                      if (clean && clean.toLowerCase() !== 'empty conversation thread') {
-                        return clean;
+      const buf = stdout;
+      if (buf && buf.length > 0) {
+        for (let i = 0; i < buf.length - 10; i++) {
+          if (buf[i] === 0x22) {
+            const len = buf[i + 1];
+            if (len === 36) {
+              const uStr = buf.slice(i + 2, i + 2 + 36).toString('utf8');
+              if (uStr.toLowerCase() === convId.toLowerCase()) {
+                let j = i + 2 + 36;
+                while (j < Math.min(i + 500, buf.length - 2)) {
+                  if (buf[j] === 0x22) {
+                    const tLen = buf[j + 1];
+                    if (tLen > 0 && tLen < 200 && j + 2 + tLen <= buf.length) {
+                      const title = buf.slice(j + 2, j + 2 + tLen).toString('utf8');
+                      if (!title.includes('\n') && !title.includes('\r')) {
+                        const clean = title.trim();
+                        if (clean && !this.isPlaceholderTitle(clean)) {
+                          this.officialTitleCache.set(convId, clean);
+                          return clean;
+                        }
                       }
                     }
                   }
+                  j++;
                 }
-                j++;
               }
             }
           }
@@ -982,8 +1017,8 @@ export class ConversationService {
             if (isSubagent) continue;
             if (!previewText && stepCount <= 1) continue;
 
-            // 1. Official AI-generated title from Antigravity conversation DB step 23
-            const officialDbTitle = this.extractOfficialTitle(convId);
+            // 1. Official AI-generated title from Antigravity conversation DB step 23 or annotations
+            const officialDbTitle = await this.extractOfficialTitle(convId);
             // 2. Implementation plan title
             let planTitle = '';
             for (const d of brainDirs) {
@@ -1080,6 +1115,29 @@ export class ConversationService {
     }
 
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+
+    // High-precision official title resolution for recent conversations:
+    // Replaces raw initial user prompts with genuine AI-summarized titles (and heals state.vscdb)
+    const recentBatch = sessions.slice(0, 60);
+    await Promise.all(
+      recentBatch.map(async (s) => {
+        try {
+          const official = await this.extractOfficialTitle(s.id);
+          if (official && !this.isPlaceholderTitle(official)) {
+            const cleanOfficial = this.sanitizeTitle(official);
+            if (cleanOfficial && s.title !== cleanOfficial) {
+              s.title = cleanOfficial;
+              this.injectTrajectorySummary(s.id, cleanOfficial, s.workspacePath || '');
+            }
+          } else if (this.isPlaceholderTitle(s.title)) {
+            if (s.previewText) {
+              s.title = this.sanitizeTitle(s.previewText);
+            }
+          }
+        } catch {}
+      })
+    );
+
     this.cachedSessions = sessions;
     this.lastSessionsScan = now;
     return sessions;
@@ -1353,9 +1411,9 @@ export class ConversationService {
    */
   public async openConversation(session: ConversationSession): Promise<void> {
     // If session title is placeholder, resolve on-the-fly from official DB or preview before copying!
-    if (this.isPlaceholderTitle(session.title)) {
+    if (this.isPlaceholderTitle(session.title) || session.title === session.previewText) {
       const realTitle =
-        this.extractOfficialTitle(session.id) ||
+        (await this.extractOfficialTitle(session.id)) ||
         (session.previewText ? this.sanitizeTitle(session.previewText) : '');
       if (realTitle && !this.isPlaceholderTitle(realTitle)) {
         session.title = realTitle;
