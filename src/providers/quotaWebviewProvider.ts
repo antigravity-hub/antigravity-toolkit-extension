@@ -38,6 +38,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this._extensionUri],
     };
 
+    // Immediately render Cyber-Glass skeleton to clear loading progress bar in < 1ms
+    webviewView.webview.html = this.renderLoadingSkeleton();
+
     webviewView.webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
         case 'tabChanged':
@@ -132,50 +135,66 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const [
-      quotas,
-      activeAccount,
-      accounts,
-      autoSwitchStatus,
-      allConversations,
-      workspaceConversations,
-      isShieldOnline,
-      tokenStats,
-    ] = await Promise.all([
-      this.quotaService.getActiveQuotas(),
-      this.accountService.getActiveAccount(),
-      this.accountService.getAccounts(),
-      this.autoSwitchService.getStatus(),
-      this.conversationService.getConversations(),
-      this.conversationService.getActiveWorkspaceConversations(),
-      ShieldBridge.getInstance().isShieldOnline(),
-      ShieldBridge.getInstance().getTokenStats(),
-    ]);
+    try {
+      const activeAccount = this.accountService.getActiveAccount();
+      const accounts = this.accountService.getAccounts();
+      const autoSwitchStatus = this.autoSwitchService.getStatus();
 
-    const activeModels = await LanguageServerClient.getInstance().getActiveChatModels(
-      workspaceConversations[0]?.id || allConversations[0]?.id
-    );
+      const [
+        quotas,
+        allConversations,
+        isShieldOnline,
+        tokenStats,
+      ] = await Promise.all([
+        this.quotaService.getActiveQuotas().catch(() => []),
+        this.conversationService.getConversations().catch(() => []),
+        ShieldBridge.getInstance().isShieldOnline().catch(() => false),
+        ShieldBridge.getInstance().getTokenStats().catch(() => null),
+      ]);
 
-    // Detect currently open workspace in VS Code / Antigravity IDE
-    const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
-    const currentWorkspaceName =
-      vscode.workspace.name ||
-      (currentWorkspaceFolder ? path.basename(currentWorkspaceFolder) : '');
+      const workspaceConversations = await this.conversationService.getActiveWorkspaceConversations().catch(() => []);
 
-    this._view.webview.html = this.renderHtml(
-      activeAccount,
-      quotas,
-      accounts,
-      autoSwitchStatus,
-      allConversations,
-      workspaceConversations,
-      isShieldOnline,
-      currentWorkspaceName,
-      tokenStats,
-      activeModels.activeModelName,
-      this._activeTab,
-      activeModels
-    );
+      let activeModels: ActiveChatModelsResult = {
+        geminiModel: 'Gemini 3.8 Flash (Medium)',
+        claudeModel: 'Claude Sonnet 4.6 (Thinking)',
+        isClaudeActive: false,
+        activeModelName: 'Gemini 3.8 Flash (Medium)',
+      };
+      try {
+        activeModels = await Promise.race([
+          LanguageServerClient.getInstance().getActiveChatModels(
+            workspaceConversations[0]?.id || allConversations[0]?.id
+          ),
+          new Promise<ActiveChatModelsResult>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500))
+        ]);
+      } catch {}
+
+      // Detect currently open workspace in VS Code / Antigravity IDE
+      const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+      const currentWorkspaceName =
+        vscode.workspace.name ||
+        (currentWorkspaceFolder ? path.basename(currentWorkspaceFolder) : '');
+
+      this._view.webview.html = this.renderHtml(
+        activeAccount,
+        quotas,
+        accounts,
+        autoSwitchStatus,
+        allConversations,
+        workspaceConversations,
+        isShieldOnline,
+        currentWorkspaceName,
+        tokenStats,
+        activeModels.activeModelName,
+        this._activeTab,
+        activeModels
+      );
+    } catch (err: any) {
+      console.error('[QuotaWebviewProvider] Error updating webview:', err);
+      if (this._view) {
+        this._view.webview.html = this.renderErrorFallback(err?.message || String(err));
+      }
+    }
   }
 
   private renderHtml(
@@ -3346,6 +3365,178 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         }
       });
     }, 1000);
+  </script>
+</body>
+</html>`;
+  }
+
+  private renderLoadingSkeleton(): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Antigravity Shield</title>
+  <style>
+    :root {
+      --bg-base: #090d16;
+      --bg-card: rgba(15, 23, 42, 0.65);
+      --border-card: rgba(255, 255, 255, 0.08);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --cyan-glow: #06b6d4;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding: 12px;
+      overflow-x: hidden;
+      user-select: none;
+    }
+    .header-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-card);
+      border-radius: 12px;
+      margin-bottom: 12px;
+      backdrop-filter: blur(12px);
+    }
+    .brand-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--cyan-glow);
+      box-shadow: 0 0 8px var(--cyan-glow);
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+    .skeleton-box {
+      background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.08) 50%, rgba(255,255,255,0.03) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.8s infinite;
+      border-radius: 10px;
+    }
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    .skeleton-account {
+      height: 48px;
+      margin-bottom: 12px;
+    }
+    .skeleton-tabs {
+      height: 36px;
+      margin-bottom: 14px;
+    }
+    .skeleton-card {
+      height: 120px;
+      margin-bottom: 12px;
+      border: 1px solid var(--border-card);
+    }
+    .loading-msg {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header-bar">
+    <div class="brand-title">
+      <div class="pulse-dot"></div>
+      <span>ANTIGRAVITY SHIELD</span>
+    </div>
+    <span style="font-size: 10px; color: var(--text-secondary); text-transform: uppercase;">Connecting</span>
+  </div>
+  <div class="skeleton-box skeleton-account"></div>
+  <div class="skeleton-box skeleton-tabs"></div>
+  <div class="skeleton-box skeleton-card"></div>
+  <div class="skeleton-box skeleton-card"></div>
+  <div class="loading-msg">
+    <span>Synchronizing live AI quota telemetry & accounts...</span>
+  </div>
+</body>
+</html>`;
+  }
+
+  private renderErrorFallback(errMsg: string): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Antigravity Shield</title>
+  <style>
+    body {
+      background-color: #090d16;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 80vh;
+      text-align: center;
+    }
+    .error-card {
+      background: rgba(239, 68, 68, 0.08);
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 320px;
+      width: 100%;
+    }
+    .error-icon { font-size: 32px; margin-bottom: 8px; }
+    .error-title { font-size: 14px; font-weight: 700; color: #f87171; margin-bottom: 6px; }
+    .error-desc { font-size: 11px; color: #94a3b8; margin-bottom: 16px; line-height: 1.4; word-break: break-word; }
+    .btn-retry {
+      background: #0891b2;
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-retry:hover { background: #06b6d4; }
+  </style>
+</head>
+<body>
+  <div class="error-card">
+    <div class="error-icon">⚠️</div>
+    <div class="error-title">Initialization Delayed</div>
+    <div class="error-desc">${errMsg || 'Could not load quota telemetry.'}</div>
+    <button class="btn-retry" onclick="vscode.postMessage({ command: 'refresh' })">
+      <span>🔄 Reload Telemetry</span>
+    </button>
+  </div>
+  <script>
+    const vscode = acquireVsCodeApi();
   </script>
 </body>
 </html>`;

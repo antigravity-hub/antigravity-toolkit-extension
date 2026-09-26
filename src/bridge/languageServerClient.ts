@@ -96,52 +96,52 @@ export class LanguageServerClient {
 
     try {
       if (isWindows) {
-        // Use wmic without interactive console window or PowerShell flash
-        let wmicOutput = '';
+        // Query process list via PowerShell CIM (supported on all modern Windows versions, replacing deprecated wmic)
         try {
-          const { stdout } = await execAsync(
-            'wmic process where "name like \'%language_server%\'" get ProcessId,CommandLine /format:csv',
-            { timeout: 5000, windowsHide: true }
+          const { stdout: psOut } = await execAsync(
+            'powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter \'name like \'\'%language_server%\'\'\' | Select-Object -Property ProcessId, CommandLine | ConvertTo-Json"',
+            { timeout: 2500, windowsHide: true }
           );
-          wmicOutput = stdout;
-        } catch {
-          // Fallback to tasklist / safe command if wmic is restricted
-          try {
-            const { stdout } = await execAsync('tasklist /FI "IMAGENAME eq language_server.exe" /FO CSV /NH', {
-              timeout: 4000,
-              windowsHide: true,
-            });
-            wmicOutput = stdout;
-          } catch {
-            // ignore
-          }
-        }
+          if (psOut) {
+            try {
+              const parsed = JSON.parse(psOut.trim());
+              const list = Array.isArray(parsed) ? parsed : [parsed];
+              const candidates: { pid: string; csrfToken: string }[] = [];
 
-        const candidates: { pid: string; csrfToken: string }[] = [];
-        if (wmicOutput) {
-          for (const line of wmicOutput.split('\r\n')) {
-            const csrfMatch = line.match(/--csrf_token[\s=]+([\w-]+)/);
-            const pidMatch = line.match(/,(\d+)\s*$/) || line.match(/(\d+)/);
-            if (csrfMatch && pidMatch) {
-              candidates.push({ pid: pidMatch[1], csrfToken: csrfMatch[1] });
-            }
-          }
-        }
+              for (const item of list) {
+                const cmd = item.CommandLine || '';
+                const pid = String(item.ProcessId || '');
+                const csrfMatch = cmd.match(/--csrf_token[\s=]+([\w-]+)/);
+                const httpsPortMatch = cmd.match(/--https_server_port[\s=]+(\d+)/);
 
-        if (candidates.length > 0) {
-          const { stdout: netstatOut } = await execAsync('netstat -ano -p TCP', { timeout: 5000, windowsHide: true });
-          for (const cand of candidates) {
-            for (const nLine of netstatOut.split('\n')) {
-              if (nLine.includes('LISTENING') && nLine.trim().endsWith(cand.pid)) {
-                const parts = nLine.trim().split(/\s+/);
-                const m = parts[1]?.match(/:(\d+)$/);
-                if (m) {
-                  endpoints.push({ port: parseInt(m[1], 10), csrfToken: cand.csrfToken, pid: cand.pid });
+                if (csrfMatch && httpsPortMatch) {
+                  const pNum = parseInt(httpsPortMatch[1], 10);
+                  if (pNum > 0) {
+                    endpoints.push({ port: pNum, csrfToken: csrfMatch[1], pid });
+                  }
+                } else if (csrfMatch) {
+                  candidates.push({ pid, csrfToken: csrfMatch[1] });
                 }
               }
-            }
+
+              // Only if port was not directly in arguments, fall back to netstat
+              if (endpoints.length === 0 && candidates.length > 0) {
+                const { stdout: netstatOut } = await execAsync('netstat -ano -p TCP', { timeout: 3000, windowsHide: true });
+                for (const cand of candidates) {
+                  for (const nLine of netstatOut.split('\n')) {
+                    if (nLine.includes('LISTENING') && nLine.trim().endsWith(cand.pid)) {
+                      const parts = nLine.trim().split(/\s+/);
+                      const m = parts[1]?.match(/:(\d+)$/);
+                      if (m) {
+                        endpoints.push({ port: parseInt(m[1], 10), csrfToken: cand.csrfToken, pid: cand.pid });
+                      }
+                    }
+                  }
+                }
+              }
+            } catch {}
           }
-        }
+        } catch {}
       } else {
         const { stdout } = await execAsync('ps -A -ww -o pid,args | grep language_server | grep -v grep', { timeout: 5000 });
         const lines = stdout.split('\n');

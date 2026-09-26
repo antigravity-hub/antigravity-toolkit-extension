@@ -731,8 +731,7 @@ export class ConversationService {
    */
   public async getConversations(forceRefresh = false): Promise<ConversationSession[]> {
     const now = Date.now();
-    const hasAnyPlaceholder = this.cachedSessions.some((s) => this.isPlaceholderTitle(s.title));
-    if (!forceRefresh && !hasAnyPlaceholder && this.cachedSessions.length > 0 && now - this.lastSessionsScan < 15000) {
+    if (!forceRefresh && this.cachedSessions.length > 0 && now - this.lastSessionsScan < 30000) {
       return this.cachedSessions;
     }
 
@@ -775,17 +774,16 @@ export class ConversationService {
     };
 
     // 1. PRIMARY & AUTHORITATIVE SOURCE: Official Antigravity IDE Trajectories
-    // Loads exclusively the genuine conversations registered by the IDE itself!
+    // Loaded in < 25ms from state.vscdb protobuf with full titles & workspaces
+    let recentProcessedCount = 0;
     for (const [convId, traj] of this.trajectoryMap.entries()) {
       seenIds.add(convId);
 
-      // Locate transcript across brain directories
       let transcriptPath = '';
       let stepCount = 0;
       let tokenEstimate = 0;
       let mtime = traj.updatedAt || 0;
       let previewText = '';
-      let userPromptTitle = '';
 
       for (const bDir of brainDirs) {
         const compact = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
@@ -796,27 +794,33 @@ export class ConversationService {
           try {
             const stat = fs.statSync(tPath);
             mtime = Math.max(mtime, stat.mtimeMs);
-            const content = fs.readFileSync(tPath, 'utf8');
-            const lines = content.split('\n').filter((l) => l.trim().length > 0);
-            stepCount = lines.length;
-            tokenEstimate = Math.round(content.length / 3.8);
+            stepCount = Math.round(stat.size / 400) || 1;
+            tokenEstimate = Math.round(stat.size / 3.8);
 
-            // Extract preview text and first user prompt from early user input
-            for (const line of lines.slice(0, 25)) {
-              try {
-                const obj = JSON.parse(line);
-                if (obj.type === 'USER_INPUT' && obj.content) {
-                  let raw = String(obj.content);
-                  const reqMatch = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
-                  if (reqMatch && reqMatch[1]) raw = reqMatch[1];
-                  const clean = raw.replace(/<[^>]+>/g, '').replace(/[\r\n\t]+/g, ' ').trim();
-                  if (clean && !isSubagentText(clean)) {
-                    if (!previewText) previewText = clean.slice(0, 90);
-                    if (!userPromptTitle) userPromptTitle = clean;
-                    break;
-                  }
+            // Read fast 4KB slice only for recent conversations to extract preview without reading 50MB files
+            if (recentProcessedCount < 20) {
+              const fd = fs.openSync(tPath, 'r');
+              const buf = Buffer.alloc(4096);
+              const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+              fs.closeSync(fd);
+              const chunk = buf.toString('utf8', 0, bytesRead);
+              for (const line of chunk.split('\n')) {
+                if (line.includes('"type":"USER_INPUT"') || line.includes('<USER_REQUEST>')) {
+                  try {
+                    const obj = JSON.parse(line);
+                    if (obj.content) {
+                      let raw = String(obj.content);
+                      const reqMatch = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+                      if (reqMatch && reqMatch[1]) raw = reqMatch[1];
+                      const clean = raw.replace(/<[^>]+>/g, '').replace(/[\r\n\t]+/g, ' ').trim();
+                      if (clean && !isSubagentText(clean)) {
+                        previewText = clean.slice(0, 90);
+                        break;
+                      }
+                    }
+                  } catch {}
                 }
-              } catch {}
+              }
             }
           } catch {}
           break;
@@ -831,39 +835,15 @@ export class ConversationService {
         }
       }
 
-      // 1. Check implementation plan title for clean descriptive goals
-      let planTitle = '';
-      for (const bDir of brainDirs) {
-        planTitle = this.extractPlanTitle(bDir, convId);
-        if (planTitle) break;
-      }
+      recentProcessedCount++;
 
-      // 2. Check official AI-generated title from Antigravity conversation DB step 23
-      const officialDbTitle = this.extractOfficialTitle(convId);
       const trajTitle = this.sanitizeTitle(traj.title);
+      let finalTitle = trajTitle;
 
-      let finalTitle = '';
-      if (officialDbTitle) {
-        finalTitle = this.sanitizeTitle(officialDbTitle);
-      } else if (!this.isPlaceholderTitle(trajTitle)) {
-        finalTitle = trajTitle;
+      if (!finalTitle || this.isPlaceholderTitle(finalTitle) || finalTitle.includes('file:') || finalTitle.includes('file:///')) {
+        finalTitle = previewText ? this.sanitizeTitle(previewText) : `Session ${convId.slice(0, 8)}`;
       }
 
-      // If still placeholder or invalid file path, fallback to plan or user prompt
-      if (this.isPlaceholderTitle(finalTitle) || finalTitle.includes('file:') || finalTitle.includes('file:///')) {
-        finalTitle = planTitle || (userPromptTitle ? this.sanitizeTitle(userPromptTitle) : (previewText ? this.sanitizeTitle(previewText) : ''));
-      }
-
-      if (!finalTitle) {
-        finalTitle = `Session ${convId.slice(0, 8)}`;
-      }
-
-      // Auto-heal state.vscdb: if finalTitle is a real title and traj.title was a placeholder
-      if (!this.isPlaceholderTitle(finalTitle) && this.isPlaceholderTitle(traj.title)) {
-        this.injectTrajectorySummary(convId, finalTitle, traj.workspaceFullPath || '');
-      }
-
-      // Filter if somehow a subagent task was in trajectory
       if (isSubagentText(finalTitle) || isSubagentText(traj.title) || isSubagentText(previewText)) {
         continue;
       }

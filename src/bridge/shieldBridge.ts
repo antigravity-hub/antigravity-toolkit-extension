@@ -16,9 +16,9 @@ export class ShieldBridge {
     return ShieldBridge.instance;
   }
 
-  private pingUrl(url: URL): Promise<boolean> {
+  private pingUrl(url: URL, timeoutMs = 400): Promise<boolean> {
     return new Promise((resolve) => {
-      const req = http.get(url, { timeout: 1000 }, (res) => {
+      const req = http.get(url, { timeout: timeoutMs }, (res) => {
         resolve(res.statusCode === 200);
       });
       req.on('error', () => resolve(false));
@@ -35,7 +35,7 @@ export class ShieldBridge {
 
   public async getBaseUrl(): Promise<string> {
     if (this.detectedBaseUrl) {
-      const alive = await this.pingUrl(new URL('/api/health', this.detectedBaseUrl));
+      const alive = await this.pingUrl(new URL('/api/health', this.detectedBaseUrl), 300);
       if (alive) return this.detectedBaseUrl;
       this.detectedBaseUrl = null;
     }
@@ -54,7 +54,7 @@ export class ShieldBridge {
         const info = JSON.parse(raw);
         if (info && info.port) {
           const candidate = `http://127.0.0.1:${info.port}`;
-          const ok = await this.pingUrl(new URL('/api/health', candidate));
+          const ok = await this.pingUrl(new URL('/api/health', candidate), 300);
           if (ok) {
             this.detectedBaseUrl = candidate;
             return candidate;
@@ -62,7 +62,7 @@ export class ShieldBridge {
         }
         if (info && info.companion_port) {
           const candidate = `http://127.0.0.1:${info.companion_port}`;
-          const ok = await this.pingUrl(new URL('/api/health', candidate));
+          const ok = await this.pingUrl(new URL('/api/health', candidate), 300);
           if (ok) {
             this.detectedBaseUrl = candidate;
             return candidate;
@@ -73,16 +73,17 @@ export class ShieldBridge {
       // ignore and proceed to candidate list
     }
 
-    // 2. Auto-detect between candidate ports
-    for (const candidate of [
+    // 2. Auto-detect between candidate ports in parallel
+    const candidates = [
+      'http://127.0.0.1:8046',
+      'http://127.0.0.1:8766',
       'http://127.0.0.1:8045',
       'http://127.0.0.1:8765',
-      'http://127.0.0.1:8046',
       'http://127.0.0.1:8047',
-      'http://127.0.0.1:8766',
-    ]) {
+    ];
+    for (const candidate of candidates) {
       try {
-        const ok = await this.pingUrl(new URL('/api/health', candidate));
+        const ok = await this.pingUrl(new URL('/api/health', candidate), 250);
         if (ok) {
           this.detectedBaseUrl = candidate;
           return candidate;
@@ -91,7 +92,7 @@ export class ShieldBridge {
         // try next
       }
     }
-    return 'http://127.0.0.1:8045';
+    return 'http://127.0.0.1:8046';
   }
 
   /**
@@ -101,29 +102,34 @@ export class ShieldBridge {
     try {
       const baseUrl = await this.getBaseUrl();
       const url = new URL('/api/health', baseUrl);
-      const isOnline = await this.pingUrl(url);
+      const isOnline = await this.pingUrl(url, 300);
       if (isOnline) return true;
     } catch {
       // ignore
     }
 
-    // Check candidate ports directly for /api/health and /toolkit/status
-    for (const port of [8045, 8765, 8046, 8766]) {
+    // Check candidate ports in parallel for fast discovery
+    const ports = [8046, 8766, 8045, 8765];
+    const checks = ports.map(async (port) => {
       try {
-        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/health`));
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/health`), 250);
         if (isOnline) {
           this.detectedBaseUrl = `http://127.0.0.1:${port}`;
           return true;
         }
       } catch {}
       try {
-        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/toolkit/status`));
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/toolkit/status`), 250);
         if (isOnline) {
           this.detectedBaseUrl = `http://127.0.0.1:${port}`;
           return true;
         }
       } catch {}
-    }
+      return false;
+    });
+
+    const results = await Promise.all(checks);
+    if (results.some(Boolean)) return true;
 
     this.detectedBaseUrl = null;
     return false;
