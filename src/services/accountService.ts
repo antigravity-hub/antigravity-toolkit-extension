@@ -115,7 +115,7 @@ export class AccountService {
    * 4. Syncs legacy state.vscdb and disk configs (~/.antigravity_shield & ~/.gemini)
    * 5. Notifies Shield daemon
    */
-  public async switchAccount(email: string): Promise<boolean> {
+  public async switchAccount(email: string, silent = false): Promise<boolean> {
     const target = this.accounts.get(email);
     if (!target) {
       vscode.window.showErrorMessage(`Account ${email} not found.`);
@@ -241,7 +241,9 @@ export class AccountService {
     const shield = ShieldBridge.getInstance();
     await shield.notifyShieldSwitch(email, target.id);
 
-    vscode.window.showInformationMessage(`⚡ Switched to ${email}`);
+    if (!silent) {
+      vscode.window.showInformationMessage(`⚡ Switched to ${email}`);
+    }
     this.onDidChangeAccountsEmitter.fire();
 
     return true;

@@ -91,16 +91,16 @@ export class AutoSwitchService {
       clearInterval(this.intervalTimer);
     }
 
-    // Check every 30 seconds
+    // Fast zero-downtime proactive quota monitoring
     this.intervalTimer = setInterval(() => {
       this.evaluateQuotasAndRotateIfNeeded();
-    }, 30000);
+    }, 5000);
   }
 
   /**
    * Core autonomous decision engine:
    * Evaluates active account quotas and rotates to the best standby account
-   * when quota drops below 1-2% or 5h rolling window/weekly limit is exhausted.
+   * when quota drops below threshold (default 3%) or 5h rolling window/weekly limit is exhausted.
    */
   public async evaluateQuotasAndRotateIfNeeded(): Promise<boolean> {
     if (!this.enabled || this.isChecking) {
@@ -115,14 +115,8 @@ export class AutoSwitchService {
       }
 
       const config = vscode.workspace.getConfiguration('antigravityToolkit.autoSwitch');
-      const threshold = config.get<number>('quotaThresholdPercent', 2);
-      const cooldownMs = config.get<number>('cooldownMinutes', 3) * 60 * 1000;
-
-      // Check cooldown
+      const threshold = config.get<number>('quotaThresholdPercent', 3);
       const now = Date.now();
-      if (now - this.lastSwitchTimestamp < cooldownMs) {
-        return false;
-      }
 
       const quotas = await this.quotaService.getActiveQuotas();
       if (quotas.length === 0) {
@@ -196,20 +190,27 @@ export class AutoSwitchService {
       this.lastSwitchTimestamp = now;
       this.lastSwitchReason = criticalReason;
 
-      const success = await this.accountService.switchAccount(bestCandidate.account.email);
+      const success = await this.accountService.switchAccount(bestCandidate.account.email, true);
       if (success) {
         this.emitStatus();
 
         const notify = config.get<boolean>('notifyOnSwitch', true);
         if (notify) {
-          vscode.window.showInformationMessage(
-            `⚡ [Antigravity Auto-Rotate] Quota reached critical limit. Switched to ${bestCandidate.account.email} (${Math.round(bestCandidate.healthScore)}% quota available).`,
-            'Switch Back'
-          ).then((action) => {
-            if (action === 'Switch Back') {
-              this.accountService.switchAccount(activeAccount.email);
+          // Subtle corner toast with 8-second auto-dismissal
+          vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: `سوییچ شد از ${activeAccount.email} به ${bestCandidate.account.email} بخاطر اتمام توکن`,
+              cancellable: false,
+            },
+            async () => {
+              await new Promise((resolve) => setTimeout(resolve, 8000));
             }
-          });
+          );
+          vscode.window.setStatusBarMessage(
+            `⚡ سوییچ شد به ${bestCandidate.account.email} (اتمام توکن)`,
+            8000
+          );
         }
         return true;
       }

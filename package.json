@@ -137,7 +137,7 @@
         },
         "antigravityToolkit.quotaRefreshIntervalSeconds": {
           "type": "number",
-          "default": 60,
+          "default": 10,
           "description": "Interval in seconds to automatically poll and update quotas."
         },
         "antigravityToolkit.showStatusBarBadge": {
@@ -152,7 +152,7 @@
         },
         "antigravityToolkit.autoSwitch.quotaThresholdPercent": {
           "type": "number",
-          "default": 2,
+          "default": 3,
           "description": "Remaining quota percentage (1-10%) that triggers autonomous account rotation."
         },
         "antigravityToolkit.autoSwitch.cooldownMinutes": {
