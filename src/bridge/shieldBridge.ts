@@ -329,9 +329,16 @@ export class ShieldBridge {
                         : typeof b.percentage === 'number'
                         ? (b.percentage > 99 && b.percentage < 100 ? 99 : b.percentage)
                         : 100;
-                      const resetMs = b.reset_time ? new Date(b.reset_time).getTime() : Date.now() + 5 * 3600 * 1000;
-                      const durationMs = Math.max(0, resetMs - Date.now());
-                      const resetFormatted = ShieldBridge.formatPaddedCountdown(durationMs, isWeekly);
+                      const resetMs = b.reset_time ? new Date(b.reset_time).getTime() : 0;
+                      const durationMs = resetMs > Date.now() ? Math.max(0, resetMs - Date.now()) : 0;
+                      const resetFormatted =
+                        remaining >= 100 && !isWeekly
+                          ? 'Ready'
+                          : durationMs > 0
+                          ? ShieldBridge.formatPaddedCountdown(durationMs, isWeekly)
+                          : remaining >= 100
+                          ? 'Ready'
+                          : '00m';
 
                       const bucket: import('../types').QuotaBucket = {
                         bucketId: b.bucket_id || b.window,

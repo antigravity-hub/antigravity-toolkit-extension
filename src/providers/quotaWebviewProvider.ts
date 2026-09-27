@@ -708,42 +708,60 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         let fiveHourReset = '';
         let weeklyRem = 100;
         let weeklyReset = '';
+        let fiveHourResetMs = 0;
+        let weeklyResetMs = 0;
 
         if (acc.quotaGroups && acc.quotaGroups.length > 0) {
           const gemini = acc.quotaGroups.find((g) => g.displayName.toLowerCase().includes('gemini')) || acc.quotaGroups[0];
           if (gemini.fiveHourBucket) {
             fiveHourRem = gemini.fiveHourBucket.remainingPercentage ?? 100;
             fiveHourReset = (gemini.fiveHourBucket.resetTimeFormatted || '').replace(/\s*\d+s$/, '');
+            fiveHourResetMs = gemini.fiveHourBucket.resetTimeMs || 0;
           }
           if (gemini.weeklyBucket) {
             weeklyRem = gemini.weeklyBucket.remainingPercentage ?? 100;
             weeklyReset = gemini.weeklyBucket.resetTimeFormatted || '';
+            weeklyResetMs = gemini.weeklyBucket.resetTimeMs || 0;
           }
         } else if (acc.quotas && acc.quotas.length > 0) {
           const q5 = acc.quotas.find((q) => q.windowType === 'rolling_5h') || acc.quotas[0];
           if (q5) {
             fiveHourRem = q5.remainingQuota ?? Math.max(0, 100 - (q5.usagePercentage || 0));
             fiveHourReset = (q5.resetTimeFormatted || '').replace(/\s*\d+s$/, '');
+            fiveHourResetMs = q5.resetTimeMs || 0;
           }
           const qw = acc.quotas.find((q) => q.windowType === 'weekly');
           if (qw) {
             weeklyRem = qw.remainingQuota ?? Math.max(0, 100 - (qw.usagePercentage || 0));
             weeklyReset = qw.resetTimeFormatted || '';
+            weeklyResetMs = qw.resetTimeMs || 0;
           }
         }
 
-        const is5hDepleted = fiveHourRem <= 0 || health <= 0;
+        const is5hDepleted = fiveHourRem <= 0;
         const isWeeklyDepleted = weeklyRem <= 0;
         const isBothDepleted = is5hDepleted && isWeeklyDepleted;
         const isDepleted = !isBlocked && !isDisabled && !isForbidden && (is5hDepleted || isWeeklyDepleted);
 
-        let resetTimerDisplay = fiveHourReset;
-        if (isBothDepleted && weeklyReset) {
+        let targetResetMs = 0;
+        let resetTimerDisplay = '';
+
+        if (fiveHourRem < 100 && fiveHourReset) {
+          resetTimerDisplay = fiveHourReset;
+          targetResetMs = fiveHourResetMs;
+        } else if (weeklyRem <= 0 && weeklyReset) {
           resetTimerDisplay = weeklyReset;
-        } else if (!resetTimerDisplay && weeklyReset) {
+          targetResetMs = weeklyResetMs;
+        } else if (fiveHourReset) {
+          resetTimerDisplay = fiveHourReset;
+          targetResetMs = fiveHourResetMs;
+        } else if (weeklyReset) {
           resetTimerDisplay = weeklyReset;
+          targetResetMs = weeklyResetMs;
         }
-        if (!resetTimerDisplay) resetTimerDisplay = '04h 12m';
+        if (!resetTimerDisplay) {
+          resetTimerDisplay = fiveHourRem >= 100 ? 'Ready' : '';
+        }
 
         let healthColor = '#10b981'; // Emerald
         let statusBadge = 'Ready';
@@ -823,9 +841,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                     ? `<span class="compact-reset-pill pill-disabled" title="${acc.proxyDisabledReason || 'Account is turned off/disabled in Shield'}">⊘ Disabled in Shield</span>`
                     : isForbidden
                     ? `<span class="compact-reset-pill pill-forbidden" title="${acc.forbiddenReason || 'Forbidden (403)'}">✕ Forbidden</span>`
-                    : health >= 100 && fiveHourRem >= 100
+                    : (fiveHourRem >= 100 && weeklyRem > 0)
                     ? `<span class="compact-reset-pill" style="color: #10b981; border-color: rgba(16, 185, 129, 0.3);">✓ Ready</span>`
-                    : `<span class="compact-reset-pill" title="Resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
+                    : `<span class="compact-reset-pill" data-reset-ms="${targetResetMs}" title="Resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
                 }
                 ${usedFormatted ? `<span class="compact-usage-val" title="${usedTokens.toLocaleString()} tokens consumed">${usedFormatted} used</span>` : ''}
               </div>
@@ -849,7 +867,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                           403
                          </button>`
                       : isDepleted
-                        ? `<span class="pill-depleted-wait" title="Quota resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
+                        ? `<span class="pill-depleted-wait" data-reset-ms="${targetResetMs}" title="Quota resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
                         : `<button class="btn-compact-switch" onclick="switchAccount(this, '${acc.email}')">
                             ⚡ Switch
                            </button>`
@@ -3440,32 +3458,65 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     // Live countdown timer script ticking every 1 second in DOM
     setInterval(() => {
-      if (currentQuotaWindow !== '5h') return;
-      const cards = document.querySelectorAll('.quota-group-card');
       const now = Date.now();
+      const pad = (n) => (n < 10 ? '0' + n : '' + n);
 
-      cards.forEach((card, idx) => {
-        const resetMs = parseInt(card.getAttribute('data-reset-ms'), 10);
+      // 1. Quota group cards (when viewing 5h window)
+      if (currentQuotaWindow === '5h') {
+        const cards = document.querySelectorAll('.quota-group-card');
+        cards.forEach((card, idx) => {
+          const resetMs = parseInt(card.getAttribute('data-reset-ms'), 10);
+          if (isNaN(resetMs) || resetMs <= 0) return;
+
+          const diff = Math.max(0, resetMs - now);
+          const totalSeconds = Math.floor(diff / 1000);
+          const hours = Math.floor(totalSeconds / 3600);
+          const minutes = Math.floor((totalSeconds % 3600) / 60);
+
+          let formatted = '';
+          if (hours > 0) {
+            formatted = pad(hours) + 'h ' + pad(minutes) + 'm';
+          } else {
+            formatted = pad(minutes) + 'm';
+          }
+
+          const el = document.getElementById('countdown-' + idx);
+          if (el) {
+            el.innerText = formatted;
+          }
+        });
+      }
+
+      // 2. Switchboard account rows (live ticking second by second)
+      const pills = document.querySelectorAll('.compact-reset-pill[data-reset-ms], .pill-depleted-wait[data-reset-ms]');
+      pills.forEach((pill) => {
+        const resetMs = parseInt(pill.getAttribute('data-reset-ms'), 10);
         if (isNaN(resetMs) || resetMs <= 0) return;
 
         const diff = Math.max(0, resetMs - now);
+        if (diff <= 0) {
+          pill.innerText = '✓ Ready';
+          pill.style.color = '#10b981';
+          pill.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+          return;
+        }
+
         const totalSeconds = Math.floor(diff / 1000);
-        const hours = Math.floor(totalSeconds / 3600);
+        const days = Math.floor(totalSeconds / 86400);
+        const hours = Math.floor((totalSeconds % 86400) / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
         const seconds = totalSeconds % 60;
 
-        const pad = (n) => (n < 10 ? '0' + n : '' + n);
         let formatted = '';
-        if (hours > 0) {
-          formatted = pad(hours) + 'h ' + pad(minutes) + 'm';
+        if (days > 0) {
+          formatted = days + 'd ' + pad(hours) + 'h';
+        } else if (hours > 0) {
+          formatted = pad(hours) + 'h ' + pad(minutes) + 'm ' + pad(seconds) + 's';
         } else {
-          formatted = pad(minutes) + 'm';
+          formatted = pad(minutes) + 'm ' + pad(seconds) + 's';
         }
 
-        const el = document.getElementById('countdown-' + idx);
-        if (el) {
-          el.innerText = formatted;
-        }
+        pill.innerText = '⏳ ' + formatted;
       });
     }, 1000);
   </script>

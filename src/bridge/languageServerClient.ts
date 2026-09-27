@@ -118,14 +118,16 @@ export class LanguageServerClient {
                   const pNum = parseInt(httpsPortMatch[1], 10);
                   if (pNum > 0) {
                     endpoints.push({ port: pNum, csrfToken: csrfMatch[1], pid });
+                  } else {
+                    candidates.push({ pid, csrfToken: csrfMatch[1] });
                   }
                 } else if (csrfMatch) {
                   candidates.push({ pid, csrfToken: csrfMatch[1] });
                 }
               }
 
-              // Only if port was not directly in arguments, fall back to netstat
-              if (endpoints.length === 0 && candidates.length > 0) {
+              // Discover ephemeral listening ports via netstat for all candidates
+              if (candidates.length > 0) {
                 const { stdout: netstatOut } = await execAsync('netstat -ano -p TCP', { timeout: 3000, windowsHide: true });
                 for (const cand of candidates) {
                   for (const nLine of netstatOut.split('\n')) {
@@ -133,7 +135,10 @@ export class LanguageServerClient {
                       const parts = nLine.trim().split(/\s+/);
                       const m = parts[1]?.match(/:(\d+)$/);
                       if (m) {
-                        endpoints.push({ port: parseInt(m[1], 10), csrfToken: cand.csrfToken, pid: cand.pid });
+                        const port = parseInt(m[1], 10);
+                        if (!endpoints.some(e => e.port === port)) {
+                          endpoints.push({ port, csrfToken: cand.csrfToken, pid: cand.pid });
+                        }
                       }
                     }
                   }
