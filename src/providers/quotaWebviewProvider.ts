@@ -3505,18 +3505,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         const days = Math.floor(totalSeconds / 86400);
         const hours = Math.floor((totalSeconds % 86400) / 3600);
         const minutes = Math.floor((totalSeconds % 3600) / 60);
-        const seconds = totalSeconds % 60;
 
         let formatted = '';
         if (days > 0) {
           formatted = days + 'd ' + pad(hours) + 'h';
         } else if (hours > 0) {
-          formatted = pad(hours) + 'h ' + pad(minutes) + 'm ' + pad(seconds) + 's';
+          formatted = pad(hours) + 'h ' + pad(minutes) + 'm';
         } else {
-          formatted = pad(minutes) + 'm ' + pad(seconds) + 's';
+          formatted = pad(minutes) + 'm';
         }
 
         pill.innerText = '⏳ ' + formatted;
+        pill.title = 'Resets in ' + formatted;
       });
     }, 1000);
   </script>
