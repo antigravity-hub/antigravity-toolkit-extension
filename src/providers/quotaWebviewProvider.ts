@@ -13,6 +13,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _activeTab: string = 'overview';
 
+  private isUpdating = false;
+  private updateDebounceTimer?: NodeJS.Timeout;
+
   constructor(
     private readonly _extensionUri: vscode.Uri,
     private readonly quotaService: QuotaService,
@@ -20,10 +23,19 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     private readonly autoSwitchService: AutoSwitchService,
     private readonly conversationService: ConversationService
   ) {
-    this.quotaService.onDidChangeQuotas(() => this.updateWebview());
-    this.accountService.onDidChangeAccounts(() => this.updateWebview());
-    this.autoSwitchService.onDidChangeStatus(() => this.updateWebview());
-    this.conversationService.onDidChangeConversations(() => this.updateWebview());
+    this.quotaService.onDidChangeQuotas(() => this.scheduleWebviewUpdate());
+    this.accountService.onDidChangeAccounts(() => this.scheduleWebviewUpdate());
+    this.autoSwitchService.onDidChangeStatus(() => this.scheduleWebviewUpdate());
+    this.conversationService.onDidChangeConversations(() => this.scheduleWebviewUpdate());
+  }
+
+  public scheduleWebviewUpdate(): void {
+    if (this.updateDebounceTimer) {
+      clearTimeout(this.updateDebounceTimer);
+    }
+    this.updateDebounceTimer = setTimeout(() => {
+      this.updateWebview();
+    }, 120);
   }
 
   public resolveWebviewView(
@@ -38,8 +50,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [this._extensionUri],
     };
 
-    // Immediately render Cyber-Glass skeleton to clear loading progress bar in < 1ms
-    webviewView.webview.html = this.renderLoadingSkeleton();
+    // Immediately render instant local view with in-memory accounts and quotas (Zero loading lag)
+    this.renderInstantView();
 
     webviewView.webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
@@ -130,29 +142,84 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     this.updateWebview();
   }
 
+  private renderInstantView(): void {
+    if (!this._view) return;
+    try {
+      const activeAccount = this.accountService.getActiveAccount();
+      const accounts = this.accountService.getAccounts();
+      const autoSwitchStatus = this.autoSwitchService.getStatus();
+      const quotas = activeAccount
+        ? this.quotaService.getAccountQuotas(activeAccount)
+        : (accounts.length > 0 ? this.quotaService.getAccountQuotas(accounts[0]) : []);
+      const allConversations = this.conversationService.getCachedSessions();
+      const workspaceConversations = allConversations;
+      const isShieldOnline = ShieldBridge.getInstance().isLastKnownOnline();
+      const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+      const currentWorkspaceName =
+        vscode.workspace.name ||
+        (currentWorkspaceFolder ? path.basename(currentWorkspaceFolder) : '');
+
+      this._view.webview.html = this.renderHtml(
+        activeAccount || accounts[0],
+        quotas,
+        accounts,
+        autoSwitchStatus,
+        allConversations,
+        workspaceConversations,
+        isShieldOnline,
+        currentWorkspaceName,
+        null,
+        'Gemini 3.8 Flash (Medium)',
+        this._activeTab
+      );
+    } catch {
+      if (this._view) {
+        this._view.webview.html = this.renderLoadingSkeleton();
+      }
+    }
+  }
+
   public async updateWebview(): Promise<void> {
     if (!this._view) {
       return;
     }
+    if (this.isUpdating) {
+      return;
+    }
+    this.isUpdating = true;
 
     try {
       const activeAccount = this.accountService.getActiveAccount();
       const accounts = this.accountService.getAccounts();
       const autoSwitchStatus = this.autoSwitchService.getStatus();
 
+      const quotas = await this.quotaService.getActiveQuotas().catch(() => []);
+
       const [
-        quotas,
         allConversations,
         isShieldOnline,
         tokenStats,
       ] = await Promise.all([
-        this.quotaService.getActiveQuotas().catch(() => []),
-        this.conversationService.getConversations().catch(() => []),
-        ShieldBridge.getInstance().isShieldOnline().catch(() => false),
-        ShieldBridge.getInstance().getTokenStats().catch(() => null),
+        Promise.race([
+          this.conversationService.getConversations(),
+          new Promise<ConversationSession[]>((res) =>
+            setTimeout(() => res(this.conversationService.getCachedSessions()), 600)
+          ),
+        ]).catch(() => this.conversationService.getCachedSessions()),
+        Promise.race([
+          ShieldBridge.getInstance().isShieldOnline(),
+          new Promise<boolean>((res) => setTimeout(() => res(ShieldBridge.getInstance().isLastKnownOnline()), 400))
+        ]).catch(() => false),
+        Promise.race([
+          ShieldBridge.getInstance().getTokenStats(),
+          new Promise<TokenUsageStats | null>((res) => setTimeout(() => res(null), 600))
+        ]).catch(() => null),
       ]);
 
-      const workspaceConversations = await this.conversationService.getActiveWorkspaceConversations().catch(() => []);
+      const workspaceConversations = await Promise.race([
+        this.conversationService.getActiveWorkspaceConversations(),
+        new Promise<ConversationSession[]>((res) => setTimeout(() => res(allConversations), 400))
+      ]).catch(() => allConversations);
 
       let activeModels: ActiveChatModelsResult = {
         geminiModel: 'Gemini 3.8 Flash (Medium)',
@@ -165,7 +232,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           LanguageServerClient.getInstance().getActiveChatModels(
             workspaceConversations[0]?.id || allConversations[0]?.id
           ),
-          new Promise<ActiveChatModelsResult>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500))
+          new Promise<ActiveChatModelsResult>((_, reject) => setTimeout(() => reject(new Error('timeout')), 800))
         ]);
       } catch {}
 
@@ -176,7 +243,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         (currentWorkspaceFolder ? path.basename(currentWorkspaceFolder) : '');
 
       this._view.webview.html = this.renderHtml(
-        activeAccount,
+        activeAccount || accounts[0],
         quotas,
         accounts,
         autoSwitchStatus,
@@ -194,6 +261,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       if (this._view) {
         this._view.webview.html = this.renderErrorFallback(err?.message || String(err));
       }
+    } finally {
+      this.isUpdating = false;
     }
   }
 

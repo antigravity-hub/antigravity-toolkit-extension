@@ -18,6 +18,7 @@ export class ConversationService {
   private officialTitleCache: Map<string, string> = new Map();
   private brainWatchers: fs.FSWatcher[] = [];
   private watchDebounceTimer: NodeJS.Timeout | undefined;
+  private isSelfWritingDb = false;
 
   private constructor() {}
 
@@ -26,6 +27,10 @@ export class ConversationService {
       ConversationService.instance = new ConversationService();
     }
     return ConversationService.instance;
+  }
+
+  public getCachedSessions(): ConversationSession[] {
+    return this.cachedSessions;
   }
 
   /**
@@ -73,7 +78,7 @@ export class ConversationService {
       }
     }
 
-    // Watch globalStorage state.vscdb directory
+    // Watch globalStorage state.vscdb directory (guarded against self-mutations)
     const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
     if (appData) {
       const gsDirs = [
@@ -84,6 +89,7 @@ export class ConversationService {
         if (fs.existsSync(gsDir)) {
           try {
             const w = fs.watch(gsDir, { recursive: false }, (_event, filename) => {
+              if (this.isSelfWritingDb) return;
               if (!filename || filename.toLowerCase().includes('state.vscdb')) {
                 this.scheduleWatchRefresh();
               }
@@ -96,14 +102,16 @@ export class ConversationService {
   }
 
   private scheduleWatchRefresh(): void {
+    if (this.isSelfWritingDb) return;
     if (this.watchDebounceTimer) {
       clearTimeout(this.watchDebounceTimer);
     }
     this.watchDebounceTimer = setTimeout(() => {
+      if (this.isSelfWritingDb) return;
       this.lastSessionsScan = 0;
       this.lastTrajectoryLoad = 0;
       this.refresh();
-    }, 500);
+    }, 2000);
   }
 
   public disposeWatchers(): void {
@@ -383,6 +391,7 @@ export class ConversationService {
    */
   public injectTrajectorySummary(sessionId: string, title: string, workspacePath = ''): boolean {
     if (!sessionId || this.isPlaceholderTitle(title)) return false;
+    this.isSelfWritingDb = true;
     try {
       const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
       const ideDbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
@@ -397,6 +406,7 @@ export class ConversationService {
         encoding: 'utf8',
         windowsHide: true,
         maxBuffer: 50 * 1024 * 1024,
+        timeout: 3000,
       });
 
       const currentVal = (qRes.stdout || '').trim();
@@ -447,6 +457,7 @@ export class ConversationService {
         encoding: 'utf8',
         windowsHide: true,
         maxBuffer: 50 * 1024 * 1024,
+        timeout: 3000,
       });
 
       if (uRes.status === 0) {
@@ -462,6 +473,10 @@ export class ConversationService {
     } catch (err) {
       console.warn('[ConversationService] Failed to inject trajectory summary:', err);
       return false;
+    } finally {
+      setTimeout(() => {
+        this.isSelfWritingDb = false;
+      }, 1500);
     }
   }
 
@@ -641,20 +656,15 @@ export class ConversationService {
   }
 
   /**
-   * High-precision, multi-tier extractor for official conversation title from:
-   * 1. In-memory cache (0ms)
-   * 2. Antigravity annotations (*.pbtxt) (0.05ms)
-   * 3. Antigravity conversation DB step_type = 23 (compaction/title checkpoint)
+   * Fast synchronous extractor from in-memory cache and *.pbtxt annotations (<0.05ms)
    */
-  public async extractOfficialTitle(convId: string): Promise<string | null> {
+  public extractAnnotationTitle(convId: string): string | null {
     if (!convId) return null;
     if (this.officialTitleCache.has(convId)) {
       return this.officialTitleCache.get(convId)!;
     }
 
     const homeDir = os.homedir();
-
-    // 1. FAST TIER: Check Antigravity annotations (*.pbtxt) - ultra fast (<0.1ms)
     const annotationDirs = [
       path.join(homeDir, '.gemini', 'antigravity', 'annotations'),
       path.join(homeDir, '.gemini', 'antigravity-ide', 'annotations'),
@@ -676,8 +686,21 @@ export class ConversationService {
         } catch {}
       }
     }
+    return null;
+  }
 
-    // 2. AUTHORITATIVE TIER: Conversation DB step_type = 23 (compaction/title checkpoint)
+  /**
+   * High-precision, multi-tier extractor for official conversation title from:
+   * 1. In-memory cache (0ms)
+   * 2. Antigravity annotations (*.pbtxt) (0.05ms)
+   * 3. Antigravity conversation DB step_type = 23 (compaction/title checkpoint)
+   */
+  public async extractOfficialTitle(convId: string): Promise<string | null> {
+    if (!convId) return null;
+    const fastTitle = this.extractAnnotationTitle(convId);
+    if (fastTitle) return fastTitle;
+
+    const homeDir = os.homedir();
     const dbPaths = [
       path.join(homeDir, '.gemini', 'antigravity-ide', 'conversations', `${convId}.db`),
       path.join(homeDir, '.gemini', 'antigravity', 'conversations', `${convId}.db`),
@@ -1017,8 +1040,8 @@ export class ConversationService {
             if (isSubagent) continue;
             if (!previewText && stepCount <= 1) continue;
 
-            // 1. Official AI-generated title from Antigravity conversation DB step 23 or annotations
-            const officialDbTitle = await this.extractOfficialTitle(convId);
+            // 1. Check in-memory cache and *.pbtxt annotations (fast <0.05ms)
+            const officialDbTitle = this.extractAnnotationTitle(convId);
             // 2. Implementation plan title
             let planTitle = '';
             for (const d of brainDirs) {
@@ -1090,12 +1113,6 @@ export class ConversationService {
               minute: '2-digit',
             });
 
-            // Autonomous session auto-healing: ONLY inject if it's a genuine title!
-            // Never inject placeholder "Session <id>" into state.vscdb!
-            if (!this.isPlaceholderTitle(finalTitle)) {
-              this.injectTrajectorySummary(convId, finalTitle, workspacePath || '');
-            }
-
             sessions.push({
               id: convId,
               title: finalTitle,
@@ -1116,9 +1133,8 @@ export class ConversationService {
 
     sessions.sort((a, b) => b.updatedAt - a.updatedAt);
 
-    // High-precision official title resolution for recent conversations:
-    // Replaces raw initial user prompts with genuine AI-summarized titles (and heals state.vscdb)
-    const recentBatch = sessions.slice(0, 60);
+    // High-precision official title resolution for top 15 recent conversations in-memory:
+    const recentBatch = sessions.slice(0, 15);
     await Promise.all(
       recentBatch.map(async (s) => {
         try {
@@ -1127,7 +1143,6 @@ export class ConversationService {
             const cleanOfficial = this.sanitizeTitle(official);
             if (cleanOfficial && s.title !== cleanOfficial) {
               s.title = cleanOfficial;
-              this.injectTrajectorySummary(s.id, cleanOfficial, s.workspacePath || '');
             }
           } else if (this.isPlaceholderTitle(s.title)) {
             if (s.previewText) {

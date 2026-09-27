@@ -104,24 +104,32 @@ export class ShieldBridge {
 
     // 2. Auto-detect between candidate ports in parallel
     const candidates = [
+      'http://127.0.0.1:8765',
       'http://127.0.0.1:8046',
       'http://127.0.0.1:8766',
       'http://127.0.0.1:8045',
-      'http://127.0.0.1:8765',
       'http://127.0.0.1:8047',
     ];
-    for (const candidate of candidates) {
-      try {
-        const ok = await this.pingUrl(new URL('/api/health', candidate), 250);
-        if (ok) {
-          this.detectedBaseUrl = candidate;
-          return candidate;
-        }
-      } catch {
-        // try next
+    try {
+      const checks = candidates.map(async (candidate) => {
+        try {
+          const ok = await this.pingUrl(new URL('/api/health', candidate), 250);
+          if (ok) return candidate;
+        } catch {}
+        return null;
+      });
+      const results = await Promise.all(checks);
+      const aliveCandidate = results.find((c): c is string => Boolean(c));
+      if (aliveCandidate) {
+        this.detectedBaseUrl = aliveCandidate;
+        return aliveCandidate;
       }
-    }
-    return 'http://127.0.0.1:8046';
+    } catch {}
+    return 'http://127.0.0.1:8765';
+  }
+
+  public isLastKnownOnline(): boolean {
+    return Boolean(this.detectedBaseUrl);
   }
 
   /**
