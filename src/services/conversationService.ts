@@ -1358,7 +1358,7 @@ export class ConversationService {
         const tempVbs = path.join(os.tmpdir(), `ag_select_${Date.now()}.vbs`);
         // Fast, reliable step-by-step automation:
         // 1. Wait 400ms for the native picker UI and search input to render.
-        // 2. Send Ctrl+V and Shift+Insert to paste the title into the search box.
+        // 2. Send Ctrl+A to clear/select any previous text, then Ctrl+V to paste the title.
         // 3. Wait 600ms for fuzzy search filtering.
         // 4. Send Down Arrow to highlight the top filtered conversation.
         // 5. Wait 400ms.
@@ -1369,8 +1369,6 @@ export class ConversationService {
           'WshShell.SendKeys "^a"',
           'WScript.Sleep 50',
           'WshShell.SendKeys "^v"',
-          'WScript.Sleep 50',
-          'WshShell.SendKeys "+{INSERT}"',
           'WScript.Sleep 600',
           'WshShell.SendKeys "{DOWN}"',
           'WScript.Sleep 400',
