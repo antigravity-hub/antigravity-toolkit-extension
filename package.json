@@ -152,7 +152,7 @@
         },
         "antigravityToolkit.autoSwitch.quotaThresholdPercent": {
           "type": "number",
-          "default": 3,
+          "default": 5,
           "description": "Remaining quota percentage (1-10%) that triggers autonomous account rotation."
         },
         "antigravityToolkit.autoSwitch.cooldownMinutes": {

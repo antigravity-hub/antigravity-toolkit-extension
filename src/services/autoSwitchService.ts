@@ -70,7 +70,7 @@ export class AutoSwitchService {
     await config.update('enabled', enabled, vscode.ConfigurationTarget.Global);
     this.emitStatus();
     vscode.window.showInformationMessage(
-      `Antigravity Auto-Rotate is now ${enabled ? 'ENABLED (Auto-switching on ≤2% quota)' : 'DISABLED'}`
+      `Antigravity Auto-Rotate is now ${enabled ? 'ENABLED (Auto-switching on ≤5% quota)' : 'DISABLED'}`
     );
   }
 
@@ -78,7 +78,7 @@ export class AutoSwitchService {
     const config = vscode.workspace.getConfiguration('antigravityToolkit.autoSwitch');
     return {
       enabled: this.enabled,
-      thresholdPercent: config.get<number>('quotaThresholdPercent', 3),
+      thresholdPercent: config.get<number>('quotaThresholdPercent', 5),
       cooldownMinutes: config.get<number>('cooldownMinutes', 3),
       lastSwitchTimestamp: this.lastSwitchTimestamp,
       lastSwitchReason: this.lastSwitchReason,
@@ -122,7 +122,7 @@ export class AutoSwitchService {
   /**
    * Core autonomous decision engine:
    * Evaluates active account quotas and rotates to the best standby account
-   * when quota drops below threshold (default 3%) or 5h rolling window/weekly limit is exhausted.
+   * when quota drops below threshold (default 5%) or 5h rolling window/weekly limit is exhausted.
    */
   public async evaluateQuotasAndRotateIfNeeded(): Promise<boolean> {
     if (!this.enabled || this.isChecking) {
@@ -131,13 +131,16 @@ export class AutoSwitchService {
 
     this.isChecking = true;
     try {
+      // Re-hydrate directly from disk before evaluation to catch real-time Shield updates
+      await this.accountService.reloadFromDiskSilently();
+
       const activeAccount = this.accountService.getActiveAccount();
       if (!activeAccount) {
         return false;
       }
 
       const config = vscode.workspace.getConfiguration('antigravityToolkit.autoSwitch');
-      const threshold = config.get<number>('quotaThresholdPercent', 3);
+      const threshold = config.get<number>('quotaThresholdPercent', 5);
       const now = Date.now();
 
       const quotas = await this.quotaService.getActiveQuotas();
