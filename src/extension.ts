@@ -219,6 +219,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   quotaIntervalTimer = setInterval(async () => {
     try {
+      const active = accountService.getActiveAccount();
+      const health = active ? accountService.getAccountHealth(active) : 100;
+      if (health > 0 && health <= 15) {
+        shieldBridge.refreshAccountQuota(active?.id || active?.email).catch(() => {});
+      }
+
       const changed = await accountService.reloadFromDiskSilently();
       if (changed) {
         quotaService.notifyQuotasUpdated();

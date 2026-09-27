@@ -877,6 +877,33 @@ export class ShieldBridge {
   }
 
   /**
+   * Triggers an immediate quota refresh for a specific account or all accounts in Shield.
+   */
+  public async refreshAccountQuota(accountIdOrEmail?: string): Promise<boolean> {
+    try {
+      if (accountIdOrEmail) {
+        const encoded = encodeURIComponent(accountIdOrEmail);
+        const res = await this.postShieldApi<any>(`/accounts/${encoded}/refresh`, {});
+        if (res && res.success) return true;
+        const res2 = await this.postShieldApi<any>(`/toolkit/accounts/${encoded}/refresh`, {});
+        if (res2 && res2.success) return true;
+      }
+      const fallback = await this.postShieldApi<any>('/accounts/refresh', {});
+      return Boolean(fallback && fallback.success);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Triggers a batch refresh for all accounts in Shield.
+   */
+  public async refreshAllQuotas(): Promise<boolean> {
+    const res = await this.postShieldApi<any>('/accounts/refresh', {});
+    return Boolean(res && res.success);
+  }
+
+  /**
    * Installs or upgrades Antigravity Toolkit via Shield daemon CLI
    */
   public async installToolkit(ideId = 'antigravity'): Promise<{ success: boolean; message?: string; error?: string }> {

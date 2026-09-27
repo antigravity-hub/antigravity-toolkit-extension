@@ -20,6 +20,7 @@ export class AutoSwitchService {
   private isChecking = false;
   private lastSwitchTimestamp = 0;
   private lastSwitchReason = '';
+  private lastProactiveProbeTimestamp = 0;
   private enabled = true;
 
   private onDidChangeStatusEmitter = new vscode.EventEmitter<AutoSwitchStatus>();
@@ -165,8 +166,25 @@ export class AutoSwitchService {
         } else {
           criticalReason = `Active account is restricted in Shield`;
         }
-      } else {
         const activeHealth = this.accountService.getAccountHealth(activeAccount);
+
+        // Adaptive Low-Quota Proactive Probe:
+        // When active session quota is in the critical zone (<= 15% and > 0%),
+        // trigger a fast quota check on Shield every 30 seconds so 0% exhaustion is caught live!
+        if (activeHealth > 0 && activeHealth <= 15) {
+          if (now - this.lastProactiveProbeTimestamp >= 30000) {
+            this.lastProactiveProbeTimestamp = now;
+            console.log(
+              `[AutoSwitch] Active session ${activeAccount.email} is in low-quota zone (${activeHealth}%). Requesting live sync from Shield...`
+            );
+            import('../bridge/shieldBridge').then(({ ShieldBridge }) => {
+              ShieldBridge.getInstance()
+                .refreshAccountQuota(activeAccount.id || activeAccount.email)
+                .catch(() => {});
+            });
+          }
+        }
+
         if (activeHealth <= threshold) {
           isCritical = true;
           criticalReason = `Account quota health depleted (${activeHealth}% remaining)`;
