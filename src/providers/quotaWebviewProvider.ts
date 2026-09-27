@@ -8,10 +8,22 @@ import { Account, ModelQuota, QuotaGroup, ConversationSession, TokenUsageStats }
 import { ShieldBridge } from '../bridge/shieldBridge';
 import { LanguageServerClient, ActiveChatModelsResult } from '../bridge/languageServerClient';
 
+function escapeHtmlAttr(str: string): string {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'antigravity.views.quota';
   private _view?: vscode.WebviewView;
   private _activeTab: string = 'overview';
+  private _isSearchFocused = false;
+  private _lastContentSearchQuery = '';
+  private _lastTitleSearchQuery = '';
 
   private isUpdating = false;
   private updateDebounceTimer?: NodeJS.Timeout;
@@ -58,6 +70,17 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         case 'tabChanged':
           if (message.tab && typeof message.tab === 'string') {
             this._activeTab = message.tab;
+          }
+          break;
+        case 'searchStateChanged':
+          if (typeof message.contentQuery === 'string') {
+            this._lastContentSearchQuery = message.contentQuery;
+          }
+          if (typeof message.titleQuery === 'string') {
+            this._lastTitleSearchQuery = message.titleQuery;
+          }
+          if (typeof message.isFocused === 'boolean') {
+            this._isSearchFocused = message.isFocused;
           }
           break;
         case 'refresh':
@@ -186,6 +209,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     if (this.isUpdating) {
       return;
     }
+    // Prevent destroying the DOM while the user is actively focused or searching on the chats tab
+    if (this._isSearchFocused || (this._activeTab === 'chats' && (this._lastContentSearchQuery || this._lastTitleSearchQuery))) {
+      return;
+    }
     this.isUpdating = true;
 
     try {
@@ -278,7 +305,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     tokenStats: TokenUsageStats | null,
     activeModelName: string,
     activeTab: string = 'overview',
-    activeModels?: ActiveChatModelsResult
+    activeModels?: ActiveChatModelsResult,
+    savedContentQuery: string = this._lastContentSearchQuery,
+    savedTitleQuery: string = this._lastTitleSearchQuery
   ): string {
     const activeEmail = activeAccount ? activeAccount.email : 'No active account';
     const activeTier = activeAccount ? activeAccount.tier || 'Google AI Pro' : 'Free';
@@ -2777,6 +2806,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               id="search-titles-input"
               class="chat-search-input"
               dir="auto"
+              value="${escapeHtmlAttr(savedTitleQuery)}"
               placeholder="Search titles / جستجو در تیترها..."
               oninput="handleTitleSearch(this.value)"
               autocomplete="off"
@@ -2788,7 +2818,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               id="btn-clear-title"
               onclick="clearTitleSearch()"
               title="Clear title filter"
-              style="display: none;"
+              style="${savedTitleQuery ? 'display: inline-block;' : 'display: none;'}"
             >✕</button>
           </div>
         </div>
@@ -2802,6 +2832,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               id="search-content-input"
               class="chat-search-input"
               dir="auto"
+              value="${escapeHtmlAttr(savedContentQuery)}"
               placeholder="Search conversation text / جستجو در متن مکالمات..."
               oninput="handleContentSearchInput(this.value)"
               onkeydown="if(event.key === 'Enter') executeContentSearch()"
@@ -2823,7 +2854,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               id="btn-clear-content"
               onclick="clearContentSearch()"
               title="Clear text search"
-              style="display: none;"
+              style="${savedContentQuery ? 'display: inline-block;' : 'display: none;'}"
             >✕</button>
           </div>
         </div>
@@ -3235,6 +3266,33 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       });
     }
 
+    function handleTitleSearch(val) {
+      var rawVal = val || '';
+      activeTitleFilter = rawVal.trim();
+      var clearBtn = document.getElementById('btn-clear-title');
+      if (clearBtn) clearBtn.style.display = activeTitleFilter ? 'inline-block' : 'none';
+
+      try {
+        var state = vscode.getState() || {};
+        state.titleSearchQuery = rawVal;
+        vscode.setState(state);
+        vscode.postMessage({
+          command: 'searchStateChanged',
+          titleQuery: rawVal,
+          isFocused: true
+        });
+      } catch (e) {}
+
+      if (titleSearchDebounceTimer) {
+        clearTimeout(titleSearchDebounceTimer);
+        titleSearchDebounceTimer = null;
+      }
+
+      titleSearchDebounceTimer = setTimeout(function() {
+        applyTitleFilter(activeTitleFilter);
+      }, 150);
+    }
+
     function clearTitleSearch() {
       if (titleSearchDebounceTimer) {
         clearTimeout(titleSearchDebounceTimer);
@@ -3242,15 +3300,41 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       }
       var input = document.getElementById('search-titles-input');
       if (input) input.value = '';
+      var clearBtn = document.getElementById('btn-clear-title');
+      if (clearBtn) clearBtn.style.display = 'none';
+
+      try {
+        var state = vscode.getState() || {};
+        state.titleSearchQuery = '';
+        vscode.setState(state);
+        vscode.postMessage({
+          command: 'searchStateChanged',
+          titleQuery: '',
+          isFocused: false
+        });
+      } catch (e) {}
+
       applyTitleFilter('');
     }
 
     var contentSearchDebounceTimer = null;
 
     function handleContentSearchInput(val) {
-      var query = (val || '').trim();
+      var rawVal = val || '';
+      var query = rawVal.trim();
       var clearBtn = document.getElementById('btn-clear-content');
       if (clearBtn) clearBtn.style.display = query ? 'inline-block' : 'none';
+
+      try {
+        var state = vscode.getState() || {};
+        state.contentSearchQuery = rawVal;
+        vscode.setState(state);
+        vscode.postMessage({
+          command: 'searchStateChanged',
+          contentQuery: rawVal,
+          isFocused: true
+        });
+      } catch (e) {}
 
       if (contentSearchDebounceTimer) {
         clearTimeout(contentSearchDebounceTimer);
@@ -3258,7 +3342,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       }
 
       if (!query) {
-        clearContentSearch();
+        clearContentSearchResultsOnly();
         return;
       }
 
@@ -3277,7 +3361,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         contentSearchDebounceTimer = null;
       }
       var input = document.getElementById('search-content-input');
-      var query = (input ? input.value : '').trim();
+      var rawVal = input ? input.value : '';
+      var query = rawVal.trim();
       if (!query) {
         clearContentSearch();
         return;
@@ -3300,18 +3385,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       });
     }
 
-    function clearContentSearch() {
-      if (contentSearchDebounceTimer) {
-        clearTimeout(contentSearchDebounceTimer);
-        contentSearchDebounceTimer = null;
-      }
+    function clearContentSearchResultsOnly() {
       currentContentSearchQuery = '';
-      var input = document.getElementById('search-content-input');
-      if (input) input.value = '';
-
-      var clearBtn = document.getElementById('btn-clear-content');
-      if (clearBtn) clearBtn.style.display = 'none';
-
       var resultsArea = document.getElementById('content-search-results-area');
       if (resultsArea) resultsArea.style.display = 'none';
 
@@ -3334,6 +3409,31 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       if (activeTitleFilter) {
         handleTitleSearch(activeTitleFilter);
       }
+    }
+
+    function clearContentSearch() {
+      if (contentSearchDebounceTimer) {
+        clearTimeout(contentSearchDebounceTimer);
+        contentSearchDebounceTimer = null;
+      }
+      var input = document.getElementById('search-content-input');
+      if (input) input.value = '';
+
+      var clearBtn = document.getElementById('btn-clear-content');
+      if (clearBtn) clearBtn.style.display = 'none';
+
+      try {
+        var state = vscode.getState() || {};
+        state.contentSearchQuery = '';
+        vscode.setState(state);
+        vscode.postMessage({
+          command: 'searchStateChanged',
+          contentQuery: '',
+          isFocused: false
+        });
+      } catch (e) {}
+
+      clearContentSearchResultsOnly();
     }
 
     window.addEventListener('message', function(event) {
@@ -3519,6 +3619,55 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         pill.title = 'Resets in ' + formatted;
       });
     }, 1000);
+
+    // Restore saved search query and bind focus listeners to prevent UI blinks while typing
+    try {
+      var savedState = vscode.getState();
+      var cInput = document.getElementById('search-content-input');
+      var tInput = document.getElementById('search-titles-input');
+      if (savedState) {
+        if (savedState.contentSearchQuery && cInput && !cInput.value) {
+          cInput.value = savedState.contentSearchQuery;
+          var clearBtnC = document.getElementById('btn-clear-content');
+          if (clearBtnC) clearBtnC.style.display = 'inline-block';
+        }
+        if (savedState.titleSearchQuery && tInput && !tInput.value) {
+          tInput.value = savedState.titleSearchQuery;
+          var clearBtnT = document.getElementById('btn-clear-title');
+          if (clearBtnT) clearBtnT.style.display = 'inline-block';
+        }
+      }
+
+      if (cInput) {
+        cInput.addEventListener('focus', function() {
+          vscode.postMessage({ command: 'searchStateChanged', isFocused: true, contentQuery: cInput.value });
+        });
+        cInput.addEventListener('blur', function() {
+          setTimeout(function() {
+            var activeEl = document.activeElement;
+            var stillFocused = activeEl && (activeEl.id === 'search-content-input' || activeEl.id === 'search-titles-input');
+            if (!stillFocused) {
+              vscode.postMessage({ command: 'searchStateChanged', isFocused: false });
+            }
+          }, 200);
+        });
+      }
+
+      if (tInput) {
+        tInput.addEventListener('focus', function() {
+          vscode.postMessage({ command: 'searchStateChanged', isFocused: true, titleQuery: tInput.value });
+        });
+        tInput.addEventListener('blur', function() {
+          setTimeout(function() {
+            var activeEl = document.activeElement;
+            var stillFocused = activeEl && (activeEl.id === 'search-content-input' || activeEl.id === 'search-titles-input');
+            if (!stillFocused) {
+              vscode.postMessage({ command: 'searchStateChanged', isFocused: false });
+            }
+          }, 200);
+        });
+      }
+    } catch (e) {}
   </script>
 </body>
 </html>`;
