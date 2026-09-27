@@ -169,9 +169,9 @@ export class AutoSwitchService {
         const activeHealth = this.accountService.getAccountHealth(activeAccount);
 
         // Adaptive Low-Quota Proactive Probe:
-        // When active session quota is in the critical zone (<= 15% and > 0%),
+        // When active session quota enters the critical danger zone (<= 10% and > 0%),
         // trigger a fast quota check on Shield every 30 seconds so 0% exhaustion is caught live!
-        if (activeHealth > 0 && activeHealth <= 15) {
+        if (activeHealth > 0 && activeHealth <= 10) {
           if (now - this.lastProactiveProbeTimestamp >= 30000) {
             this.lastProactiveProbeTimestamp = now;
             console.log(

@@ -221,7 +221,7 @@ export function activate(context: vscode.ExtensionContext) {
     try {
       const active = accountService.getActiveAccount();
       const health = active ? accountService.getAccountHealth(active) : 100;
-      if (health > 0 && health <= 15) {
+      if (health > 0 && health <= 10) {
         shieldBridge.refreshAccountQuota(active?.id || active?.email).catch(() => {});
       }
 
