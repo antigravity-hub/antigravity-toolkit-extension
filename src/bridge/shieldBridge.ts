@@ -156,6 +156,13 @@ export class ShieldBridge {
         }
       } catch {}
       try {
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/toolkit/status`), 250);
+        if (isOnline) {
+          this.detectedBaseUrl = `http://127.0.0.1:${port}`;
+          return true;
+        }
+      } catch {}
+      try {
         const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/toolkit/status`), 250);
         if (isOnline) {
           this.detectedBaseUrl = `http://127.0.0.1:${port}`;
@@ -727,6 +734,12 @@ export class ShieldBridge {
   }
 
   private async pollCommandsLoop(): Promise<void> {
+    const pollCandidates = [
+      '/api/toolkit/commands/poll?timeout=15',
+      '/toolkit/commands/poll?timeout=15',
+    ];
+    let preferredCandidateIndex = 0;
+
     while (this.isPollingCommands) {
       try {
         const baseUrl = await this.getBaseUrl();
@@ -738,45 +751,56 @@ export class ShieldBridge {
           headers['Authorization'] = `Bearer ${apiKey}`;
         }
 
-        const pollPath = '/toolkit/commands/poll?timeout=15';
+        const pollPath = pollCandidates[preferredCandidateIndex];
         const url = new URL(pollPath, baseUrl);
-        const result = await new Promise<any>((resolve) => {
+        const result = await new Promise<{ status: number; data: any }>((resolve) => {
           const req = http.get(url, { headers, timeout: 25000 }, (res) => {
-            if (res.statusCode !== 200) {
-              resolve(null);
+            const statusCode = res.statusCode || 500;
+            if (statusCode !== 200) {
+              resolve({ status: statusCode, data: null });
               return;
             }
             let data = '';
             res.on('data', (chunk) => (data += chunk));
             res.on('end', () => {
               try {
-                resolve(JSON.parse(data));
+                resolve({ status: 200, data: JSON.parse(data) });
               } catch {
-                resolve(null);
+                resolve({ status: 200, data: null });
               }
             });
           });
-          req.on('error', () => resolve(null));
+          req.on('error', () => resolve({ status: 500, data: null }));
           req.on('timeout', () => {
             req.destroy();
-            resolve(null);
+            resolve({ status: 408, data: null });
           });
         });
 
-        if (result && result.status === 'ok' && result.command && this.commandHandler) {
-          console.log('[ShieldBridge] Received command from Shield via two-way tunnel:', result.command);
+        if (result.status === 404) {
+          // Switch to alternate candidate route if current one returned 404
+          preferredCandidateIndex = (preferredCandidateIndex + 1) % pollCandidates.length;
+          await new Promise((r) => setTimeout(r, 5000));
+          continue;
+        }
+
+        if (result.data && result.data.status === 'ok' && result.data.command && this.commandHandler) {
+          console.log('[ShieldBridge] Received command from Shield via two-way tunnel:', result.data.command);
           try {
-            await this.commandHandler(result.command);
+            await this.commandHandler(result.data.command);
           } catch (err) {
             console.error('[ShieldBridge] Error handling command from Shield:', err);
           }
+        } else if (result.status === 200) {
+          // Normal timeout or handled command, small pause before next long poll
+          await new Promise((r) => setTimeout(r, 1000));
         } else {
-          // Prevent tight loop when server returns timeout, non-200, or empty poll
-          await new Promise((r) => setTimeout(r, 2000));
+          // Prevent tight loop when server returns error
+          await new Promise((r) => setTimeout(r, 5000));
         }
       } catch {
-        // short delay on error
-        await new Promise((r) => setTimeout(r, 2000));
+        // short delay on unexpected exception
+        await new Promise((r) => setTimeout(r, 5000));
       }
     }
   }
