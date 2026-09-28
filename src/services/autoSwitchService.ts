@@ -161,7 +161,7 @@ export class AutoSwitchService {
         isCritical = true;
         if (activeAccount.validationBlocked) {
           criticalReason = `Active account requires Google verification in Shield (${activeAccount.validationBlockedReason || 'Verification Required'})`;
-        } else if (activeAccount.disabled || activeAccount.proxyDisabled) {
+        } else if (activeAccount.disabled) {
           criticalReason = `Active account was turned off/disabled in Shield`;
         } else {
           criticalReason = `Active account is restricted in Shield`;

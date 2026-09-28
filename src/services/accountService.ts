@@ -129,7 +129,7 @@ export class AccountService {
       return false;
     }
 
-    if (target.disabled || target.proxyDisabled) {
+    if (target.disabled) {
       vscode.window.showErrorMessage(
         `⚠️ Cannot switch to ${email}: Account is turned off or disabled in Antigravity Shield.`
       );
@@ -345,7 +345,6 @@ export class AccountService {
    */
   public isAccountUsable(account: Account): boolean {
     if (account.disabled) return false;
-    if (account.proxyDisabled) return false;
     if (account.validationBlocked) return false;
     if (account.isForbidden) return false;
     return true;
