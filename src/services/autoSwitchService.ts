@@ -166,53 +166,56 @@ export class AutoSwitchService {
         } else {
           criticalReason = `Active account is restricted in Shield`;
         }
-        const activeHealth = this.accountService.getAccountHealth(activeAccount);
+      }
 
-        // Adaptive Low-Quota Proactive Probe:
-        // When active session quota enters the critical danger zone (<= 10% and > 0%),
-        // trigger a fast quota check on Shield every 30 seconds so 0% exhaustion is caught live!
-        if (activeHealth > 0 && activeHealth <= 10) {
-          if (now - this.lastProactiveProbeTimestamp >= 30000) {
-            this.lastProactiveProbeTimestamp = now;
-            console.log(
-              `[AutoSwitch] Active session ${activeAccount.email} is in low-quota zone (${activeHealth}%). Requesting live sync from Shield...`
-            );
-            import('../bridge/shieldBridge').then(({ ShieldBridge }) => {
-              ShieldBridge.getInstance()
-                .refreshAccountQuota(activeAccount.id || activeAccount.email)
-                .catch(() => {});
-            });
-          }
+      const activeHealth = this.accountService.getAccountHealth(activeAccount);
+
+      // Adaptive Low-Quota Proactive Probe:
+      // When active session quota enters the critical danger zone (<= 20% and > 0%),
+      // trigger a fast quota check on Shield every 30 seconds so 0% exhaustion is caught live!
+      if (activeHealth > 0 && activeHealth <= 20) {
+        if (now - this.lastProactiveProbeTimestamp >= 30000) {
+          this.lastProactiveProbeTimestamp = now;
+          console.log(
+            `[AutoSwitch] Active session ${activeAccount.email} is in low-quota zone (${activeHealth}%). Requesting live sync from Shield...`
+          );
+          import('../bridge/shieldBridge').then(({ ShieldBridge }) => {
+            ShieldBridge.getInstance()
+              .refreshAccountQuota(activeAccount.id || activeAccount.email)
+              .catch(() => {});
+          });
         }
+      }
 
+      if (!isCritical) {
         if (activeHealth <= threshold) {
           isCritical = true;
           criticalReason = `Account quota health depleted (${activeHealth}% remaining)`;
         } else {
-        for (const q of quotas) {
-          const remaining = typeof q.remainingQuota === 'number' ? q.remainingQuota : Math.max(0, 100 - q.usagePercentage);
-          if (remaining <= threshold) {
-            isCritical = true;
-            criticalReason = `${q.displayName} quota exhausted (${remaining}% left)`;
-            break;
-          }
-
-          // Rolling 5-hour window duration remaining check
-          if (q.windowType === 'rolling_5h' && q.resetTimeMs > 0) {
-            const timeRemainingMs = Math.max(0, q.resetTimeMs - now);
-            // 2% of 5 hours is 6 minutes (360,000 ms)
-            const fiveHoursMs = 5 * 60 * 60 * 1000;
-            const timePercent = (timeRemainingMs / fiveHoursMs) * 100;
-
-            if (timePercent <= 2 && remaining < 15) {
+          for (const q of quotas) {
+            const remaining = typeof q.remainingQuota === 'number' ? q.remainingQuota : Math.max(0, 100 - q.usagePercentage);
+            if (remaining <= threshold) {
               isCritical = true;
-              criticalReason = `${q.displayName} 5-hour window expiring (${Math.round(timeRemainingMs / 60000)}m left, ${remaining}% quota)`;
+              criticalReason = `${q.displayName} quota exhausted (${remaining}% left)`;
               break;
+            }
+
+            // Rolling 5-hour window duration remaining check
+            if (q.windowType === 'rolling_5h' && q.resetTimeMs > 0) {
+              const timeRemainingMs = Math.max(0, q.resetTimeMs - now);
+              // 2% of 5 hours is 6 minutes (360,000 ms)
+              const fiveHoursMs = 5 * 60 * 60 * 1000;
+              const timePercent = (timeRemainingMs / fiveHoursMs) * 100;
+
+              if (timePercent <= 2 && remaining < 15) {
+                isCritical = true;
+                criticalReason = `${q.displayName} 5-hour window expiring (${Math.round(timeRemainingMs / 60000)}m left, ${remaining}% quota)`;
+                break;
+              }
             }
           }
         }
       }
-    }
 
       if (!isCritical) {
         return false;

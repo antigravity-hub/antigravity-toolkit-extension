@@ -200,5 +200,6 @@
     "@vscode/vsce": "^2.30.0",
     "esbuild": "^0.21.5",
     "typescript": "^5.5.0"
-  }
+  },
+  "packageManager": "pnpm@9.7.0+sha1.8f12c476122faede7aed9a2126ef551c0dc65d7e"
 }
