@@ -1353,25 +1353,37 @@ export class ConversationService {
    * Lightweight native Windows GUI script host with fast, calibrated pauses.
    */
   public automatePasteAndSelect(title: string): void {
+    if (title) {
+      vscode.env.clipboard.writeText(title).then(undefined, () => {});
+    }
+
     if (process.platform === 'win32') {
       try {
         const tempVbs = path.join(os.tmpdir(), `ag_select_${Date.now()}.vbs`);
-        // Fast, reliable step-by-step automation:
-        // 1. Wait 400ms for the native picker UI and search input to render.
-        // 2. Send Ctrl+A to clear/select any previous text, then Ctrl+V to paste the title.
-        // 3. Wait 600ms for fuzzy search filtering.
-        // 4. Send Down Arrow to highlight the top filtered conversation.
-        // 5. Wait 400ms.
-        // 6. Send Enter to select and open the conversation.
+        // Robust step-by-step automation:
+        // 1. Give 650ms for native QuickPick input to mount, layout, and gain focus.
+        // 2. Select any pre-existing text (^a) and send Ctrl+V (^v).
+        // 3. Fallback/Idempotent paste with Shift+Insert (+{INSERT}) preceded by ^a:
+        //    - If ^v succeeded, ^a selects the pasted text and +{INSERT} overwrites it with the identical text (never duplicates!).
+        //    - If ^v was ignored due to non-English (e.g. Persian/Farsi) keyboard layout or slight focus latency, +{INSERT} reliably pastes from clipboard!
+        // 4. Wait 600ms for fuzzy search filter to refine the list.
+        // 5. Send Down Arrow to highlight the top matching item.
+        // 6. Send Enter to open.
         const vbsContent = [
           'Set WshShell = CreateObject("WScript.Shell")',
-          'WScript.Sleep 400',
+          'On Error Resume Next',
+          'WshShell.AppActivate "Antigravity"',
+          'WScript.Sleep 650',
           'WshShell.SendKeys "^a"',
-          'WScript.Sleep 50',
+          'WScript.Sleep 60',
           'WshShell.SendKeys "^v"',
+          'WScript.Sleep 60',
+          'WshShell.SendKeys "^a"',
+          'WScript.Sleep 60',
+          'WshShell.SendKeys "+{INSERT}"',
           'WScript.Sleep 600',
           'WshShell.SendKeys "{DOWN}"',
-          'WScript.Sleep 400',
+          'WScript.Sleep 350',
           'WshShell.SendKeys "{ENTER}"',
           'WScript.Sleep 200',
           'WshShell.SendKeys "{ENTER}"',
@@ -1399,7 +1411,7 @@ export class ConversationService {
     } else if (process.platform === 'darwin') {
       try {
         const script =
-          'delay 0.4\ntell application "System Events" to keystroke "v" using command down\ndelay 0.6\ntell application "System Events" to key code 125\ndelay 0.4\ntell application "System Events" to key code 36\ndelay 0.2\ntell application "System Events" to key code 36';
+          'delay 0.65\ntell application "System Events" to keystroke "a" using command down\ndelay 0.08\ntell application "System Events" to keystroke "v" using command down\ndelay 0.6\ntell application "System Events" to key code 125\ndelay 0.4\ntell application "System Events" to key code 36\ndelay 0.2\ntell application "System Events" to key code 36';
         child_process.exec(`osascript -e '${script}'`);
       } catch {
         // ignore
@@ -1407,7 +1419,7 @@ export class ConversationService {
     } else {
       try {
         child_process.exec(
-          'sleep 0.4 && xdotool key ctrl+v && sleep 0.6 && xdotool key Down && sleep 0.4 && xdotool key Return && sleep 0.2 && xdotool key Return'
+          'sleep 0.65 && xdotool key ctrl+a && sleep 0.08 && xdotool key ctrl+v && sleep 0.6 && xdotool key Down && sleep 0.4 && xdotool key Return && sleep 0.2 && xdotool key Return'
         );
       } catch {
         // ignore
@@ -1492,8 +1504,9 @@ export class ConversationService {
       .slice(0, 40);
 
     // 3. Copy search query to clipboard
-    if (searchQuery) {
-      await vscode.env.clipboard.writeText(searchQuery);
+    const finalQuery = searchQuery || cleanTitle.slice(0, 40) || session.title.slice(0, 40);
+    if (finalQuery) {
+      await vscode.env.clipboard.writeText(finalQuery);
     }
 
     // 4. Ensure recovered session is registered in Antigravity's state database
@@ -1518,11 +1531,11 @@ export class ConversationService {
     // 5. Launch automation concurrently in background (DO NOT AWAIT!)
     // vscode.commands.executeCommand on QuickPick blocks until the picker is closed,
     // so automation MUST run concurrently in the background!
-    this.automatePasteAndSelect(searchQuery);
+    this.automatePasteAndSelect(finalQuery);
 
     // 6. Open Antigravity's native Conversation Picker (DO NOT AWAIT!)
-    vscode.commands.executeCommand('antigravity.openConversationPicker').then(undefined, () => {
-      vscode.commands.executeCommand('openConversationPicker').then(undefined, () => {});
+    vscode.commands.executeCommand('antigravity.openConversationPicker', finalQuery).then(undefined, () => {
+      vscode.commands.executeCommand('openConversationPicker', finalQuery).then(undefined, () => {});
     });
   }
 
