@@ -311,7 +311,7 @@ export function activate(context: vscode.ExtensionContext) {
       const cleanTitle = String(data.title).replace(/[\r\n\t]+/g, ' ').trim();
       const searchQuery = cleanTitle
         .replace(/\.{3,}$/, '')
-        .replace(/[^\p{L}\p{N}\s\u200c\u200d]/gu, ' ')
+        .replace(/[^\p{L}\p{N}\s\u200c\u200d\-_–—]/gu, ' ')
         .replace(/[ \t]+/g, ' ')
         .trim()
         .slice(0, 40);

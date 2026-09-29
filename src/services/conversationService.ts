@@ -1475,10 +1475,10 @@ export class ConversationService {
           // ignore
         }
 
-        // Copy search query to clipboard (preserves Persian نیم‌فاصله \u200c)
+        // Copy search query to clipboard (preserves Persian نیم‌فاصله \u200c, hyphens, and dashes)
         const searchQuery = cleanTitle
           .replace(/\.{3,}$/, '')
-          .replace(/[^\p{L}\p{N}\s\u200c\u200d]/gu, ' ')
+          .replace(/[^\p{L}\p{N}\s\u200c\u200d\-_–—]/gu, ' ')
           .replace(/[ \t]+/g, ' ')
           .trim()
           .slice(0, 40);
@@ -1495,10 +1495,10 @@ export class ConversationService {
       }
     }
 
-    // 2. Prepare clean search query (preserves Persian نیم‌فاصله \u200c, removes dots, ellipsis, special chars, max 40 chars for ideal QuickPick match)
+    // 2. Prepare clean search query (preserves Persian نیم‌فاصله \u200c, hyphens, and dashes, removes dots, ellipsis, special chars, max 40 chars for ideal QuickPick match)
     const searchQuery = cleanTitle
       .replace(/\.{3,}$/, '')
-      .replace(/[^\p{L}\p{N}\s\u200c\u200d]/gu, ' ')
+      .replace(/[^\p{L}\p{N}\s\u200c\u200d\-_–—]/gu, ' ')
       .replace(/[ \t]+/g, ' ')
       .trim()
       .slice(0, 40);
