@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as child_process from 'child_process';
 import * as util from 'util';
-import { ConversationSession, ConversationStep, ContentSearchResult, ContentSearchSnippet } from '../types';
+import { ConversationSession, ConversationStep, ContentSearchResult, ContentSearchSnippet, ConversationPreviewData, ConversationArtifact, ConversationTurn } from '../types';
 
 export class ConversationService {
   private static instance: ConversationService;
@@ -643,15 +643,17 @@ export class ConversationService {
   /**
    * Checks if a title is a dummy/placeholder title rather than a genuine human or AI-summarized topic.
    */
-  private isPlaceholderTitle(title: string | undefined): boolean {
+  public isPlaceholderTitle(title: string | undefined): boolean {
     if (!title) return true;
     const t = title.trim();
     return (
-      /^Session\s+[0-9a-f]{6,12}$/i.test(t) ||
-      /^[0-9a-f]{12,64}$/i.test(t) ||
+      /^Session\s+/i.test(t) ||
+      /^[0-9a-f]{8,64}$/i.test(t) ||
       t.toLowerCase() === 'empty conversation thread' ||
       t.toLowerCase() === 'new chat' ||
-      t.toLowerCase() === 'untitled'
+      t.toLowerCase() === 'untitled' ||
+      t.toLowerCase().startsWith('untitled conversation') ||
+      t.toLowerCase().startsWith('session ')
     );
   }
 
@@ -806,6 +808,9 @@ export class ConversationService {
         lower.startsWith('you are') ||
         lower.startsWith('use a very large team') ||
         lower.startsWith('use a team') ||
+        lower.startsWith('session ') ||
+        lower.startsWith('task:') ||
+        lower.startsWith('task ') ||
         lower.includes('team of ') ||
         lower.includes('teamwork_preview') ||
         lower.includes('project orchestrator') ||
@@ -827,6 +832,9 @@ export class ConversationService {
         lower.includes('independent code review') ||
         lower.includes('forensic auditor') ||
         lower.includes('adversarial stress') ||
+        lower.includes('browser_subagent') ||
+        lower.includes('browser subagent') ||
+        lower.includes('subagent') ||
         lower.includes('comprehensive extraction, nlp-driven')
       );
     };
@@ -899,7 +907,12 @@ export class ConversationService {
       let finalTitle = trajTitle;
 
       if (!finalTitle || this.isPlaceholderTitle(finalTitle) || finalTitle.includes('file:') || finalTitle.includes('file:///')) {
-        finalTitle = previewText ? this.sanitizeTitle(previewText) : `Session ${convId.slice(0, 8)}`;
+        finalTitle = previewText ? this.sanitizeTitle(previewText) : '';
+      }
+
+      // Must be a legitimate human IDE conversation with a real title (never an internal Session)
+      if (!finalTitle || this.isPlaceholderTitle(finalTitle) || finalTitle.toLowerCase().startsWith('session ')) {
+        continue;
       }
 
       if (isSubagentText(finalTitle) || isSubagentText(traj.title) || isSubagentText(previewText)) {
@@ -1022,7 +1035,11 @@ export class ConversationService {
                 if (entry.type === 'USER_INPUT' && entry.content) {
                   const raw = entry.content;
                   const match = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
-                  const cleanPrompt = match ? match[1].trim() : raw.trim();
+                  // Real human IDE chats ALWAYS have <USER_REQUEST> tags. Subagents do not.
+                  if (!match || !match[1]) {
+                    continue;
+                  }
+                  const cleanPrompt = match[1].trim();
                   if (cleanPrompt) {
                     if (isSubagentText(cleanPrompt)) {
                       isSubagent = true;
@@ -1058,8 +1075,11 @@ export class ConversationService {
               finalTitle = this.sanitizeTitle(userPromptTitle);
             }
 
-            if (!finalTitle) {
-              finalTitle = `Session ${convId.slice(0, 8)}`;
+            // CRITICAL: Disk fallback is ONLY to recover legitimate user chats that the IDE crashed before saving.
+            // Internal subagents, background workers, and robotic runs have NO human title.
+            // If there is no genuine human title or it's a placeholder, SKIP IT completely!
+            if (!finalTitle || this.isPlaceholderTitle(finalTitle) || finalTitle.toLowerCase().startsWith('session ')) {
+              continue;
             }
 
             if (isSubagentText(finalTitle)) continue;
@@ -1554,5 +1574,230 @@ export class ConversationService {
 
   public refresh(): void {
     this.onDidChangeConversationsEmitter.fire();
+  }
+
+  /**
+   * Resolves the disk path to a conversation's brain folder.
+   */
+  public getSessionBrainPath(sessionId: string): string | undefined {
+    const brainDirs = this.getBrainDirectories();
+    for (const bDir of brainDirs) {
+      const p = path.join(bDir, sessionId);
+      if (fs.existsSync(p)) {
+        return p;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Extracts formatted conversation turns, model thoughts, and artifacts
+   * from the session's brain directory for instant preview in the modal.
+   */
+  public async getConversationPreview(sessionId: string): Promise<ConversationPreviewData> {
+    const session =
+      this.getSessionById(sessionId) ||
+      (await this.getConversations()).find((s) => s.id === sessionId);
+
+    let brainPath = this.getSessionBrainPath(sessionId);
+    if (!brainPath && session?.transcriptPath) {
+      const candidate = path.resolve(path.dirname(path.dirname(path.dirname(session.transcriptPath))));
+      if (fs.existsSync(candidate)) {
+        brainPath = candidate;
+      }
+    }
+
+    if (!brainPath) {
+      brainPath = path.join(os.homedir(), '.gemini', 'antigravity-ide', 'brain', sessionId);
+    }
+
+    const title = session?.title || `Session ${sessionId.slice(0, 8)}`;
+    const dateFormatted = session?.dateFormatted || '';
+    const projectName = session?.projectName;
+    const workspacePath = session?.workspacePath;
+    const stepCount = session?.stepCount || 0;
+    const tokenEstimate = session?.tokenEstimate;
+    const model = session?.model;
+
+    // 1. Scan for artifacts (*.md files) in brain directory root
+    const artifacts: ConversationArtifact[] = [];
+    if (fs.existsSync(brainPath)) {
+      try {
+        const entries = fs.readdirSync(brainPath, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile() && entry.name.endsWith('.md')) {
+            const fullPath = path.join(brainPath, entry.name);
+            try {
+              const stat = fs.statSync(fullPath);
+              const readLen = Math.min(stat.size, 131072); // Up to 128KB preview
+              const fd = fs.openSync(fullPath, 'r');
+              const buf = Buffer.alloc(readLen);
+              fs.readSync(fd, buf, 0, readLen, 0);
+              fs.closeSync(fd);
+              const previewContent = buf.toString('utf8');
+              artifacts.push({
+                name: entry.name,
+                relativePath: entry.name,
+                fullPath,
+                sizeBytes: stat.size,
+                previewContent,
+              });
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Parse turns from transcript.jsonl
+    const turns: ConversationTurn[] = [];
+    let transcriptPath = session?.transcriptPath;
+    if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+      const compact = path.join(brainPath, '.system_generated', 'logs', 'transcript.jsonl');
+      const full = path.join(brainPath, '.system_generated', 'logs', 'transcript_full.jsonl');
+      if (fs.existsSync(compact)) {
+        transcriptPath = compact;
+      } else if (fs.existsSync(full)) {
+        transcriptPath = full;
+      }
+    }
+
+    if (transcriptPath && fs.existsSync(transcriptPath)) {
+      try {
+        const stat = fs.statSync(transcriptPath);
+        let content = '';
+        if (stat.size > 2 * 1024 * 1024) {
+          // Read first 64KB (for initial prompt) + last 1MB (for recent turns)
+          const fd = fs.openSync(transcriptPath, 'r');
+          const headBuf = Buffer.alloc(65536);
+          const headBytes = fs.readSync(fd, headBuf, 0, 65536, 0);
+          const tailSize = 1024 * 1024;
+          const tailBuf = Buffer.alloc(tailSize);
+          const tailOffset = Math.max(0, stat.size - tailSize);
+          const tailBytes = fs.readSync(fd, tailBuf, 0, tailSize, tailOffset);
+          fs.closeSync(fd);
+          content = headBuf.toString('utf8', 0, headBytes) + '\n' + tailBuf.toString('utf8', 0, tailBytes);
+        } else {
+          content = fs.readFileSync(transcriptPath, 'utf8');
+        }
+
+        const lines = content.split('\n');
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          if (
+            !line.includes('"type":"USER_INPUT"') &&
+            !line.includes('"type":"PLANNER_RESPONSE"') &&
+            !line.includes('"source":"USER_EXPLICIT"') &&
+            !line.includes('"source":"MODEL"')
+          ) {
+            continue;
+          }
+
+          try {
+            const obj = JSON.parse(line);
+            const isUser = obj.type === 'USER_INPUT' || obj.source === 'USER_EXPLICIT';
+            const isModel = obj.type === 'PLANNER_RESPONSE' || obj.source === 'MODEL';
+
+            if (isUser) {
+              let text = typeof obj.content === 'string' ? obj.content : '';
+              if (text) {
+                const reqMatch = text.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+                if (reqMatch && reqMatch[1]) {
+                  text = reqMatch[1];
+                } else {
+                  text = text.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, '');
+                  text = text.replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/gi, '');
+                  text = text.replace(/# Conversation History[\s\S]*?<\/conversation_summaries>/gi, '');
+                }
+                text = text.trim();
+                if (text && !text.toLowerCase().startsWith('you are')) {
+                  turns.push({
+                    role: 'user',
+                    content: text,
+                    timestamp: obj.created_at,
+                    stepIndex: obj.step_index,
+                  });
+                }
+              }
+            } else if (isModel) {
+              let text = typeof obj.content === 'string' ? obj.content : '';
+              let thought = typeof obj.thinking === 'string' ? obj.thinking : '';
+              if (!thought && text.includes('<thought>')) {
+                const thoughtMatch = text.match(/<thought>([\s\S]*?)<\/thought>/i);
+                if (thoughtMatch && thoughtMatch[1]) {
+                  thought = thoughtMatch[1].trim();
+                  text = text.replace(/<thought>[\s\S]*?<\/thought>/gi, '').trim();
+                }
+              }
+
+              const toolCalls: string[] = [];
+              if (Array.isArray(obj.tool_calls)) {
+                for (const tc of obj.tool_calls) {
+                  if (tc && tc.name) {
+                    const action = tc.args?.toolAction || tc.args?.toolSummary || tc.name;
+                    toolCalls.push(typeof action === 'string' ? action.replace(/["']/g, '') : tc.name);
+                  }
+                }
+              }
+
+              if (text.trim() || thought.trim() || toolCalls.length > 0) {
+                turns.push({
+                  role: 'assistant',
+                  content: text.trim(),
+                  thought: thought.trim(),
+                  timestamp: obj.created_at,
+                  stepIndex: obj.step_index,
+                  toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+                });
+              }
+            }
+          } catch {}
+        }
+      } catch (err: any) {
+        console.error('[ConversationService] Error parsing transcript for preview:', err);
+      }
+    }
+
+    return {
+      sessionId,
+      title,
+      dateFormatted,
+      projectName,
+      workspacePath,
+      brainPath,
+      transcriptPath,
+      stepCount,
+      tokenEstimate,
+      model,
+      turns,
+      artifacts,
+    };
+  }
+
+  /**
+   * Opens the brain directory for a session in the native OS file explorer.
+   */
+  public async openBrainFolder(sessionId: string): Promise<void> {
+    const brainPath = this.getSessionBrainPath(sessionId);
+    if (brainPath && fs.existsSync(brainPath)) {
+      if (process.platform === 'win32') {
+        child_process.spawn('explorer.exe', [brainPath], { detached: true });
+      } else {
+        vscode.env.openExternal(vscode.Uri.file(brainPath));
+      }
+    } else {
+      vscode.window.showWarningMessage(`Brain directory not found for session ${sessionId}`);
+    }
+  }
+
+  /**
+   * Opens a specific artifact file directly in the editor.
+   */
+  public async openArtifact(filePath: string): Promise<void> {
+    if (fs.existsSync(filePath)) {
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+      await vscode.window.showTextDocument(doc, { preview: true });
+    } else {
+      vscode.window.showWarningMessage(`File not found: ${filePath}`);
+    }
   }
 }

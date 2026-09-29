@@ -142,6 +142,35 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               await this.conversationService.openConversation(target);
             }
           }
+        case 'getConversationPreview':
+          if (message.sessionId) {
+            try {
+              const preview = await this.conversationService.getConversationPreview(message.sessionId);
+              if (this._view) {
+                this._view.webview.postMessage({
+                  command: 'conversationPreviewData',
+                  data: preview,
+                });
+              }
+            } catch (err: any) {
+              if (this._view) {
+                this._view.webview.postMessage({
+                  command: 'conversationPreviewData',
+                  data: { sessionId: message.sessionId, error: String(err?.message || err) },
+                });
+              }
+            }
+          }
+          break;
+        case 'openBrainFolder':
+          if (message.sessionId) {
+            await this.conversationService.openBrainFolder(message.sessionId);
+          }
+          break;
+        case 'openArtifact':
+          if (message.filePath) {
+            await this.conversationService.openArtifact(message.filePath);
+          }
           break;
         case 'searchContent':
           if (typeof message.query === 'string') {
@@ -491,7 +520,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     };
 
     const renderTimelineNodes = (sessionList: ConversationSession[]) => {
-      return sessionList
+      const cleanList = sessionList.filter(
+        (s) => s && s.title && !s.title.toLowerCase().startsWith('session ')
+      );
+      return cleanList
         .map((s, sIdx) => {
           const rawTokens = s.tokenEstimate || Math.round(s.stepCount * 1400);
           const tokens = `${formatLargeTokens(rawTokens)} tokens`;
@@ -534,8 +566,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                   <span class="node-steps-tag">${s.stepCount} Steps</span>
                 </div>
                 <div class="node-footer-btns" style="display: inline-flex; gap: 4px; align-items: center;">
-                  <button type="button" class="node-open-btn node-file-btn" onclick="event.stopPropagation(); openTranscriptOnly('${s.id}')" title="Open raw transcript file in editor" style="background: rgba(148, 163, 184, 0.1); border-color: rgba(148, 163, 184, 0.25); color: #cbd5e1;">
-                    <span>📄 Log</span>
+                  <button type="button" class="node-open-btn node-preview-btn" onclick="event.stopPropagation(); previewSession('${s.id}')" title="Preview conversation & artifacts in modal" style="background: rgba(56, 189, 248, 0.12); border-color: rgba(56, 189, 248, 0.35); color: #38bdf8;">
+                    <span>👁️ Preview</span>
                   </button>
                   <button type="button" class="node-open-btn" id="btn-open-${s.id}" onclick="event.stopPropagation(); handleOpenChat(this, '${s.id}')" title="Open in Antigravity Chat panel">
                     <svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
@@ -553,14 +585,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     };
 
     // 1. Workspace specific timeline
+    const cleanWorkspaceConversations = workspaceConversations.filter(
+      (s) => s && s.title && !s.title.toLowerCase().startsWith('session ')
+    );
     const workspaceTimelineHtml =
-      workspaceConversations.length > 0
-        ? `<div class="timeline-tree">${renderTimelineNodes(workspaceConversations)}</div>`
+      cleanWorkspaceConversations.length > 0
+        ? `<div class="timeline-tree">${renderTimelineNodes(cleanWorkspaceConversations)}</div>`
         : `<div style="opacity:0.65; text-align:center; padding:18px 8px; font-size:11px;">No chats recorded for workspace <b>${currentWorkspaceName || 'Current'}</b></div>`;
 
     // 2. Group All Conversations by Project
     const projectsMap = new Map<string, ConversationSession[]>();
     for (const conv of allConversations) {
+      if (!conv || !conv.title || conv.title.toLowerCase().startsWith('session ')) continue;
       const pName = conv.projectName || 'General';
       if (!projectsMap.has(pName)) {
         projectsMap.set(pName, []);
@@ -2649,12 +2685,505 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       border-color: var(--seafoam);
     }
 
-    .btn-dock.primary-action {
-      grid-column: span 2;
-      background: linear-gradient(135deg, #0f766e 0%, #14b8a6 50%, #2dd4bf 100%);
-      border: 1px solid var(--seafoam-light);
+    /* ==========================================================================
+       Cyber-Glass Conversation & Brain Preview Modal
+       ========================================================================== */
+    .conv-modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      background: rgba(5, 10, 20, 0.85);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px;
+      animation: modalFadeIn 0.2s ease-out;
+    }
+
+    @keyframes modalFadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .conv-modal-dialog {
+      position: relative;
+      width: 100%;
+      max-width: 620px;
+      height: 88vh;
+      max-height: 820px;
+      background: #0b1220;
+      border: 1px solid rgba(45, 212, 191, 0.3);
+      border-radius: 12px;
+      box-shadow: 0 25px 65px rgba(0, 0, 0, 0.85), 0 0 35px rgba(45, 212, 191, 0.15);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: dialogPop 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    @keyframes dialogPop {
+      from { opacity: 0; transform: scale(0.96) translateY(6px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    .conv-modal-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: rgba(15, 23, 42, 0.95);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .conv-modal-title-group {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .conv-modal-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #f8fafc;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      unicode-bidi: plaintext;
+    }
+
+    .conv-modal-sub {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 4px;
+      align-items: center;
+    }
+
+    .conv-badge {
+      font-size: 9px;
+      font-weight: 600;
+      padding: 1.5px 6px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.06);
+      color: #cbd5e1;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      white-space: nowrap;
+    }
+
+    .conv-badge.badge-date {
+      color: var(--seafoam-light);
+      background: rgba(45, 212, 191, 0.12);
+      border-color: rgba(45, 212, 191, 0.25);
+    }
+
+    .conv-badge.badge-project {
+      color: #38bdf8;
+      background: rgba(56, 189, 248, 0.12);
+      border-color: rgba(56, 189, 248, 0.25);
+    }
+
+    .conv-modal-actions {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-shrink: 0;
+    }
+
+    .conv-action-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: #cbd5e1;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+
+    .conv-action-btn:hover {
+      background: rgba(45, 212, 191, 0.15);
+      border-color: var(--seafoam);
+      color: #ffffff;
+      transform: translateY(-1px);
+    }
+
+    .conv-action-btn.conv-action-primary {
+      background: linear-gradient(135deg, rgba(15, 118, 110, 0.85), rgba(20, 184, 166, 0.95));
+      border-color: var(--seafoam-light);
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(45, 212, 191, 0.25);
+    }
+
+    .conv-action-btn.conv-action-primary:hover {
+      background: linear-gradient(135deg, rgba(20, 184, 166, 0.95), rgba(45, 212, 191, 1));
+      box-shadow: 0 2px 12px rgba(45, 212, 191, 0.4);
+    }
+
+    .conv-modal-close {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.05);
+      color: #94a3b8;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .conv-modal-close:hover {
+      background: rgba(239, 68, 68, 0.25);
+      border-color: #ef4444;
+      color: #ffffff;
+    }
+
+    .conv-modal-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 6px 12px;
+      background: rgba(10, 16, 28, 0.95);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+
+    .conv-tab-btn {
+      font-size: 10.5px;
+      padding: 3px 9px;
+      border-radius: 6px;
+      background: transparent;
+      border: 1px solid transparent;
+      color: #94a3b8;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .conv-tab-btn:hover {
+      color: #cbd5e1;
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .conv-tab-btn.active {
+      background: rgba(45, 212, 191, 0.14);
+      border-color: var(--seafoam);
+      color: var(--seafoam-light);
+      font-weight: 600;
+    }
+
+    .conv-modal-body {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      color: #e2e8f0;
+      font-size: 11.5px;
+      line-height: 1.6;
+    }
+
+    .conv-loading-shimmer {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 16px;
+      gap: 12px;
+      color: #94a3b8;
+      font-size: 11px;
+    }
+
+    .conv-shimmer-spinner {
+      width: 22px;
+      height: 22px;
+      border: 2px solid rgba(45, 212, 191, 0.2);
+      border-top-color: var(--seafoam);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    .conv-turn {
+      border-radius: 8px;
+      padding: 10px 12px;
+      position: relative;
+    }
+
+    .conv-turn.is-rtl {
+      direction: rtl;
+      text-align: right;
+    }
+
+    .conv-turn-user {
+      background: rgba(30, 41, 59, 0.65);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+    }
+
+    .conv-turn-assistant {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(45, 212, 191, 0.18);
+    }
+
+    .conv-turn-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      font-size: 10px;
+    }
+
+    .conv-role-badge {
+      font-weight: 700;
+      font-size: 9.5px;
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+
+    .conv-role-user {
+      background: rgba(56, 189, 248, 0.16);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+
+    .conv-role-assistant {
+      background: rgba(45, 212, 191, 0.16);
+      color: var(--seafoam-light);
+      border: 1px solid rgba(45, 212, 191, 0.3);
+    }
+
+    .conv-turn-time {
+      font-size: 8.5px;
+      color: #64748b;
+    }
+
+    .conv-thought-box {
+      background: rgba(2, 6, 23, 0.7);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 6px;
+      margin-bottom: 8px;
+      overflow: hidden;
+    }
+
+    .conv-thought-header {
+      padding: 5px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+      background: rgba(255, 255, 255, 0.02);
+      transition: background 0.15s ease;
+    }
+
+    .conv-thought-header:hover {
+      color: #e2e8f0;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .conv-thought-chevron {
+      font-size: 12px;
+      display: inline-block;
+      transition: transform 0.2s ease;
+    }
+
+    .conv-thought-body {
+      padding: 8px 10px;
+      font-size: 10.5px;
+      color: #94a3b8;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      max-height: 220px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+
+    .conv-tools-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 8px;
+    }
+
+    .conv-tool-pill {
+      font-size: 9px;
+      font-family: monospace;
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(168, 85, 247, 0.12);
+      border: 1px solid rgba(168, 85, 247, 0.25);
+      color: #c084fc;
+    }
+
+    .conv-code-box {
+      background: #020617;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      margin: 8px 0;
+      overflow: hidden;
+      direction: ltr !important;
+      text-align: left !important;
+    }
+
+    .conv-code-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 3px 8px;
+      background: rgba(255, 255, 255, 0.04);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 9px;
+      color: #94a3b8;
+    }
+
+    .conv-code-lang {
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .conv-copy-btn {
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 8.5px;
+      color: #cbd5e1;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .conv-copy-btn:hover {
+      border-color: #38bdf8;
+      color: #38bdf8;
+    }
+
+    .conv-code-box pre {
+      margin: 0;
+      padding: 8px 10px;
+      overflow-x: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 10.5px;
+      line-height: 1.45;
+      color: #e2e8f0;
+    }
+
+    .conv-inline-code {
+      background: rgba(255, 255, 255, 0.08);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: ui-monospace, monospace;
+      font-size: 10px;
+      color: #38bdf8;
+      direction: ltr !important;
+      display: inline-block;
+    }
+
+    .conv-md-h2 {
+      font-size: 13px;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin: 10px 0 5px 0;
+    }
+
+    .conv-md-h3 {
+      font-size: 12px;
+      font-weight: 700;
+      color: #e2e8f0;
+      margin: 8px 0 4px 0;
+    }
+
+    .conv-md-h4 {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: #cbd5e1;
+      margin: 6px 0 3px 0;
+    }
+
+    .conv-md-quote {
+      border-left: 3px solid var(--seafoam);
+      margin: 6px 0;
+      padding: 4px 8px;
+      background: rgba(45, 212, 191, 0.05);
+      color: #94a3b8;
+      font-size: 11px;
+    }
+
+    .conv-turn.is-rtl .conv-md-quote {
+      border-left: none;
+      border-right: 3px solid var(--seafoam);
+    }
+
+    .conv-md-li {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin: 3px 0;
+    }
+
+    .conv-bullet {
+      color: var(--seafoam);
+      font-weight: bold;
+    }
+
+    .conv-num-bullet {
+      color: var(--seafoam-light);
+      font-weight: 600;
+      font-size: 10px;
+    }
+
+    .conv-md-hr {
+      border: 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      margin: 10px 0;
+    }
+
+    .conv-md-gap {
+      height: 8px;
+    }
+
+    .conv-artifact-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 10px;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      margin-bottom: 10px;
+      font-size: 10.5px;
+      color: #cbd5e1;
+    }
+
+    .conv-mini-btn {
+      font-size: 9.5px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: rgba(45, 212, 191, 0.12);
+      border: 1px solid rgba(45, 212, 191, 0.3);
+      color: var(--seafoam-light);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .conv-mini-btn:hover {
+      background: rgba(45, 212, 191, 0.25);
       color: #fff;
-      box-shadow: 0 2px 10px var(--seafoam-glow);
     }
   </style>
 </head>
@@ -2950,6 +3479,40 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       <button class="btn-dock primary-action" onclick="syncShield()">
         <span>🔄 Force Heartbeat & Telemetry Sync</span>
       </button>
+    </div>
+
+    <!-- Cyber-Glass Conversation & Brain Preview Modal -->
+    <div id="conversation-preview-modal" class="conv-modal-overlay" style="display: none;" onclick="handleModalBackdropClick(event)">
+      <div class="conv-modal-dialog" onclick="event.stopPropagation()">
+        <!-- Modal Header -->
+        <div class="conv-modal-header">
+          <div class="conv-modal-title-group">
+            <div class="conv-modal-title" id="conv-modal-title">Conversation Preview</div>
+            <div class="conv-modal-sub" id="conv-modal-sub"></div>
+          </div>
+          <div class="conv-modal-actions">
+            <button type="button" class="conv-action-btn" id="conv-btn-folder" title="Open Brain Directory in Explorer">
+              <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M1.5 2A1.5 1.5 0 0 0 0 3.5v9A1.5 1.5 0 0 0 1.5 14h13a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H7.414l-1.707-1.707A1 1 0 0 0 5 2.5H1.5z"/></svg>
+              <span>Folder</span>
+            </button>
+            <button type="button" class="conv-action-btn" id="conv-btn-log" title="Open raw transcript log in Editor">
+              <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M4 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V4.5L9.5 0H4zm0 1h5v3.5A1.5 1.5 0 0 0 10.5 6H14v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1z"/></svg>
+              <span>Log</span>
+            </button>
+            <button type="button" class="conv-action-btn conv-action-primary" id="conv-btn-chat" title="Open in Antigravity Chat panel">
+              <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/></svg>
+              <span>Open in Chat</span>
+            </button>
+            <button type="button" class="conv-modal-close" onclick="closeConversationPreview()" title="Close (Esc)">✕</button>
+          </div>
+        </div>
+
+        <!-- Optional Artifacts / Tabs navigation -->
+        <div class="conv-modal-tabs" id="conv-modal-tabs" style="display: none;"></div>
+
+        <!-- Scrollable Modal Body -->
+        <div class="conv-modal-body" id="conv-modal-body"></div>
+      </div>
     </div>
 
   </div>
@@ -3440,6 +4003,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       var msg = event.data;
       if (!msg) return;
 
+      if (msg.command === 'conversationPreviewData') {
+        renderConversationPreview(msg.data);
+      }
+
       if (msg.command === 'contentSearchResults') {
         var input = document.getElementById('search-content-input');
         var currentVal = (input ? input.value : '').trim();
@@ -3520,7 +4087,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                 (s.projectName ? '<span class="node-steps-tag" style="color: var(--seafoam-light);">📁 ' + escapeHtml(s.projectName) + '</span>' : '') +
               '</div>' +
               '<div class="node-footer-btns" style="display: inline-flex; gap: 4px; align-items: center;">' +
-                '<button type="button" class="node-open-btn node-file-btn" onclick="event.stopPropagation(); openTranscriptNode(this)" title="Open raw transcript file in editor" style="background: rgba(148, 163, 184, 0.1); border-color: rgba(148, 163, 184, 0.25); color: #cbd5e1;"><span>📄 Log</span></button>' +
+                '<button type="button" class="node-open-btn node-preview-btn" onclick="event.stopPropagation(); previewSessionNode(this)" title="Preview conversation & artifacts in modal" style="background: rgba(56, 189, 248, 0.12); border-color: rgba(56, 189, 248, 0.35); color: #38bdf8;"><span>👁️ Preview</span></button>' +
                 '<button type="button" class="node-open-btn" id="btn-open-' + s.id + '" onclick="event.stopPropagation(); handleOpenChatNode(this)" title="Open in Antigravity Chat panel">' +
                   '<svg class="node-btn-svg" viewBox="0 0 16 16" width="11" height="11" fill="currentColor"><path d="M14 1H2a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2v3.5L8.5 11H14a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1zm0 9H8.2L6 11.2V10H2V2h12v8z"/></svg> <span>Open in Chat</span>' +
                 '</button>' +
@@ -3668,6 +4235,325 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         });
       }
     } catch (e) {}
+
+    /* ==========================================================================
+       Cyber-Glass Conversation & Brain Preview Modal Controller
+       ========================================================================== */
+    var activePreviewData = null;
+    var activeModalTab = 'turns';
+
+    function isRtlText(str) {
+      if (!str) return false;
+      return new RegExp('[\\\\u0600-\\\\u06FF\\\\uFB50-\\\\uFDFF\\\\uFE70-\\\\uFEFF]').test(str);
+    }
+
+    function formatMarkdown(text) {
+      if (!text) return '';
+      var escaped = escapeHtml(text);
+
+      // Fenced code blocks
+      var codeBlockRe = new RegExp('\\x60\\x60\\x60([a-zA-Z0-9_\\-\\.\\+]*)\\n([\\s\\S]*?)\\x60\\x60\\x60', 'g');
+      escaped = escaped.replace(codeBlockRe, function(match, lang, code) {
+        var cleanLang = (lang || 'code').trim();
+        return '<div class="conv-code-box">' +
+          '<div class="conv-code-header">' +
+            '<span class="conv-code-lang">' + cleanLang + '</span>' +
+            '<button type="button" class="conv-copy-btn" onclick="copyCodeBlock(this)">Copy</button>' +
+          '</div>' +
+          '<pre><code>' + code + '</code></pre>' +
+        '</div>';
+      });
+
+      // Inline code
+      var inlineCodeRe = new RegExp('\\x60([^\\x60\\n]+)\\x60', 'g');
+      escaped = escaped.replace(inlineCodeRe, '<code class="conv-inline-code">$1</code>');
+
+      // Bold & Italic
+      escaped = escaped.replace(new RegExp('\\*\\*\\*([^*]+)\\*\\*\\*', 'g'), '<strong><em>$1</em></strong>');
+      escaped = escaped.replace(new RegExp('\\*\\*([^*]+)\\*\\*', 'g'), '<strong>$1</strong>');
+      escaped = escaped.replace(new RegExp('\\*([^*]+)\\*', 'g'), '<em>$1</em>');
+
+      // Headers
+      escaped = escaped.replace(new RegExp('^### (.*$)', 'gim'), '<h4 class="conv-md-h4">$1</h4>');
+      escaped = escaped.replace(new RegExp('^## (.*$)', 'gim'), '<h3 class="conv-md-h3">$1</h3>');
+      escaped = escaped.replace(new RegExp('^# (.*$)', 'gim'), '<h2 class="conv-md-h2">$1</h2>');
+
+      // Blockquotes
+      escaped = escaped.replace(new RegExp('^>\\\\s?(.*$)', 'gim'), '<blockquote class="conv-md-quote">$1</blockquote>');
+
+      // Lists
+      escaped = escaped.replace(new RegExp('^[\\*\\-]\\\\s+(.*$)', 'gim'), '<div class="conv-md-li"><span class="conv-bullet">•</span><span>$1</span></div>');
+      escaped = escaped.replace(new RegExp('^(\\\\d+)\\\\.\\\\s+(.*$)', 'gim'), '<div class="conv-md-li"><span class="conv-num-bullet">$1.</span><span>$2</span></div>');
+
+      // Horizontal rules
+      escaped = escaped.replace(new RegExp('^---$', 'gim'), '<hr class="conv-md-hr"/>');
+
+      // Preserve paragraphs outside code blocks
+      var parts = escaped.split(/(<div class="conv-code-box">[\s\S]*?<\/div>)/g);
+      for (var i = 0; i < parts.length; i++) {
+        if (!parts[i].startsWith('<div class="conv-code-box">')) {
+          parts[i] = parts[i].replace(new RegExp('\\\\n{2,}', 'g'), '<div class="conv-md-gap"></div>');
+          parts[i] = parts[i].replace(new RegExp('\\\\n', 'g'), '<br/>');
+        }
+      }
+      return parts.join('');
+    }
+
+    function previewSession(sessionId) {
+      if (!sessionId) return;
+      var modal = document.getElementById('conversation-preview-modal');
+      var modalBody = document.getElementById('conv-modal-body');
+      var modalTitle = document.getElementById('conv-modal-title');
+      var modalSub = document.getElementById('conv-modal-sub');
+      var modalTabs = document.getElementById('conv-modal-tabs');
+
+      if (modal) modal.style.display = 'flex';
+      document.body.style.overflow = 'hidden';
+
+      if (modalTitle) modalTitle.innerText = 'Loading Conversation...';
+      if (modalSub) modalSub.innerHTML = '';
+      if (modalTabs) {
+        modalTabs.innerHTML = '';
+        modalTabs.style.display = 'none';
+      }
+      if (modalBody) {
+        modalBody.innerHTML =
+          '<div class="conv-loading-shimmer">' +
+            '<div class="conv-shimmer-spinner"></div>' +
+            '<div>Reading brain artifacts & conversation logs...</div>' +
+          '</div>';
+      }
+
+      vscode.postMessage({ command: 'getConversationPreview', sessionId: sessionId });
+    }
+
+    function previewSessionNode(el) {
+      var node = (el && el.closest) ? (el.closest('.timeline-node') || el) : el;
+      var sid = node ? node.getAttribute('data-session-id') : '';
+      if (sid) previewSession(sid);
+    }
+
+    function closeConversationPreview() {
+      var modal = document.getElementById('conversation-preview-modal');
+      if (modal) modal.style.display = 'none';
+      document.body.style.overflow = '';
+      activePreviewData = null;
+    }
+
+    function handleModalBackdropClick(e) {
+      if (e.target && e.target.id === 'conversation-preview-modal') {
+        closeConversationPreview();
+      }
+    }
+
+    function toggleThought(headerEl) {
+      var container = headerEl.parentElement;
+      var content = container.querySelector('.conv-thought-body');
+      var chevron = headerEl.querySelector('.conv-thought-chevron');
+      if (!content) return;
+      if (content.style.display === 'none') {
+        content.style.display = 'block';
+        if (chevron) chevron.style.transform = 'rotate(90deg)';
+      } else {
+        content.style.display = 'none';
+        if (chevron) chevron.style.transform = 'rotate(0deg)';
+      }
+    }
+
+    function copyCodeBlock(btn) {
+      var box = btn.closest('.conv-code-box');
+      if (!box) return;
+      var codeEl = box.querySelector('code');
+      if (!codeEl) return;
+      var text = codeEl.innerText || codeEl.textContent;
+      navigator.clipboard.writeText(text).then(function() {
+        var orig = btn.innerText;
+        btn.innerText = 'Copied!';
+        btn.style.color = '#38bdf8';
+        setTimeout(function() {
+          btn.innerText = orig;
+          btn.style.color = '';
+        }, 1500);
+      });
+    }
+
+    function openModalBrainFolder(sessionId) {
+      vscode.postMessage({ command: 'openBrainFolder', sessionId: sessionId });
+    }
+
+    function openModalTranscript(sessionId) {
+      vscode.postMessage({ command: 'openTranscript', sessionId: sessionId });
+    }
+
+    function openModalChat(sessionId) {
+      closeConversationPreview();
+      var btn = document.getElementById('btn-open-' + sessionId);
+      if (btn) {
+        handleOpenChat(btn, sessionId);
+      } else {
+        vscode.postMessage({ command: 'openConversation', sessionId: sessionId });
+      }
+    }
+
+    function openArtifactFile(filePath) {
+      vscode.postMessage({ command: 'openArtifact', filePath: filePath });
+    }
+
+    function renderConversationPreview(data) {
+      if (!data) return;
+      activePreviewData = data;
+      activeModalTab = 'turns';
+
+      var modalTitle = document.getElementById('conv-modal-title');
+      var modalSub = document.getElementById('conv-modal-sub');
+      var btnFolder = document.getElementById('conv-btn-folder');
+      var btnLog = document.getElementById('conv-btn-log');
+      var btnChat = document.getElementById('conv-btn-chat');
+      var modalTabs = document.getElementById('conv-modal-tabs');
+
+      if (modalTitle) modalTitle.innerText = data.title || 'Conversation Preview';
+
+      if (modalSub) {
+        var subHtml = '';
+        if (data.dateFormatted) {
+          subHtml += '<span class="conv-badge badge-date">' + escapeHtml(data.dateFormatted) + '</span>';
+        }
+        if (data.stepCount) {
+          subHtml += '<span class="conv-badge">' + data.stepCount + ' Steps</span>';
+        }
+        if (data.tokenEstimate) {
+          subHtml += '<span class="conv-badge">' + (Math.round(data.tokenEstimate / 100) / 10) + 'k tok</span>';
+        }
+        if (data.projectName) {
+          subHtml += '<span class="conv-badge badge-project">📁 ' + escapeHtml(data.projectName) + '</span>';
+        }
+        modalSub.innerHTML = subHtml;
+      }
+
+      if (btnFolder) {
+        btnFolder.onclick = function() { openModalBrainFolder(data.sessionId); };
+      }
+      if (btnLog) {
+        btnLog.onclick = function() { openModalTranscript(data.sessionId); };
+      }
+      if (btnChat) {
+        btnChat.onclick = function() { openModalChat(data.sessionId); };
+      }
+
+      // Render Tabs if artifacts exist
+      if (modalTabs) {
+        if (data.artifacts && data.artifacts.length > 0) {
+          var turnsCount = (data.turns && data.turns.length) || 0;
+          var tabsHtml = '<button type="button" class="conv-tab-btn active" id="conv-tab-turns" onclick="switchModalTab(\'turns\')">💬 Chat Turns (' + turnsCount + ')</button>';
+          for (var aIdx = 0; aIdx < data.artifacts.length; aIdx++) {
+            var art = data.artifacts[aIdx];
+            tabsHtml += '<button type="button" class="conv-tab-btn" id="conv-tab-art-' + aIdx + '" onclick="switchModalTab(\'art-' + aIdx + '\')">📋 ' + escapeHtml(art.name) + '</button>';
+          }
+          modalTabs.innerHTML = tabsHtml;
+          modalTabs.style.display = 'flex';
+        } else {
+          modalTabs.innerHTML = '';
+          modalTabs.style.display = 'none';
+        }
+      }
+
+      renderModalBody();
+    }
+
+    function switchModalTab(tabId) {
+      activeModalTab = tabId;
+      var tabs = document.querySelectorAll('.conv-tab-btn');
+      tabs.forEach(function(t) {
+        t.classList.remove('active');
+      });
+      var activeBtn = document.getElementById('conv-tab-' + tabId);
+      if (activeBtn) activeBtn.classList.add('active');
+
+      renderModalBody();
+    }
+
+    function renderModalBody() {
+      var modalBody = document.getElementById('conv-modal-body');
+      if (!modalBody || !activePreviewData) return;
+
+      if (activeModalTab === 'turns') {
+        var turns = activePreviewData.turns || [];
+        if (turns.length === 0) {
+          modalBody.innerHTML =
+            '<div style="text-align: center; padding: 30px 10px; color: #94a3b8; font-size: 11.5px;">' +
+              '<div>No prompt or response logs recorded in this brain session yet.</div>' +
+              '<div style="margin-top: 10px;">' +
+                '<button type="button" class="conv-action-btn" onclick="openModalTranscript(\'' + activePreviewData.sessionId + '\')">Open Raw Log File</button>' +
+              '</div>' +
+            '</div>';
+          return;
+        }
+
+        var html = '';
+        for (var i = 0; i < turns.length; i++) {
+          var turn = turns[i];
+          var isUser = turn.role === 'user';
+          var isRtl = isRtlText(turn.content || turn.thought || '');
+
+          html += '<div class="conv-turn ' + (isUser ? 'conv-turn-user' : 'conv-turn-assistant') + ' ' + (isRtl ? 'is-rtl' : '') + '">';
+          html += '<div class="conv-turn-header">';
+          html += '<span class="conv-role-badge ' + (isUser ? 'conv-role-user' : 'conv-role-assistant') + '">' + (isUser ? 'User' : 'Assistant') + '</span>';
+          if (turn.timestamp) {
+            var timeStr = turn.timestamp.split('T')[1] ? turn.timestamp.split('T')[1].slice(0, 8) : turn.timestamp;
+            html += '<span class="conv-turn-time">' + escapeHtml(timeStr) + '</span>';
+          }
+          html += '</div>';
+
+          // Thinking dropdown
+          if (turn.thought) {
+            html += '<div class="conv-thought-box">';
+            html += '<div class="conv-thought-header" onclick="toggleThought(this)">';
+            html += '<span>🧠 Thought Process</span>';
+            html += '<span class="conv-thought-chevron">›</span>';
+            html += '</div>';
+            html += '<div class="conv-thought-body" style="display: none;">' + formatMarkdown(turn.thought) + '</div>';
+            html += '</div>';
+          }
+
+          // Tool calls
+          if (turn.toolCalls && turn.toolCalls.length > 0) {
+            html += '<div class="conv-tools-row">';
+            for (var tIdx = 0; tIdx < turn.toolCalls.length; tIdx++) {
+              html += '<span class="conv-tool-pill">⚙ ' + escapeHtml(turn.toolCalls[tIdx]) + '</span>';
+            }
+            html += '</div>';
+          }
+
+          // Main response content
+          html += '<div class="conv-turn-content">' + formatMarkdown(turn.content) + '</div>';
+          html += '</div>';
+        }
+
+        modalBody.innerHTML = html;
+        modalBody.scrollTop = 0;
+      } else if (activeModalTab.startsWith('art-')) {
+        var artIdx = parseInt(activeModalTab.replace('art-', ''), 10);
+        var art = activePreviewData.artifacts && activePreviewData.artifacts[artIdx];
+        if (!art) return;
+
+        var kb = Math.round((art.sizeBytes / 1024) * 10) / 10;
+        var html = '<div class="conv-artifact-bar">';
+        html += '<span>📄 <b>' + escapeHtml(art.name) + '</b> (' + kb + ' KB)</span>';
+        html += '<button type="button" class="conv-mini-btn" onclick="openArtifactFile(\'' + escapeHtml(art.fullPath.replace(/\\/g, '\\\\')) + '\')">Open in Editor</button>';
+        html += '</div>';
+        html += '<div class="conv-artifact-content ' + (isRtlText(art.previewContent) ? 'is-rtl' : '') + '">' + formatMarkdown(art.previewContent) + '</div>';
+
+        modalBody.innerHTML = html;
+        modalBody.scrollTop = 0;
+      }
+    }
+
+    // Keyboard shortcut: close preview modal on Escape
+    window.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        closeConversationPreview();
+      }
+    });
   </script>
 </body>
 </html>`;

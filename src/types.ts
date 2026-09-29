@@ -117,4 +117,35 @@ export interface TokenUsageStats {
   byAccount: AccountTokenUsage[];
   byModel: ModelTokenUsage[];
 }
+export interface ConversationArtifact {
+  name: string;
+  relativePath: string;
+  fullPath: string;
+  sizeBytes: number;
+  previewContent: string;
+}
 
+export interface ConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
+  thought?: string;
+  timestamp?: string;
+  stepIndex?: number;
+  toolCalls?: string[];
+}
+
+export interface ConversationPreviewData {
+  sessionId: string;
+  title: string;
+  dateFormatted: string;
+  projectName?: string;
+  workspacePath?: string;
+  brainPath: string;
+  transcriptPath?: string;
+  stepCount: number;
+  tokenEstimate?: number;
+  model?: string;
+  turns: ConversationTurn[];
+  artifacts: ConversationArtifact[];
+  error?: string;
+}
