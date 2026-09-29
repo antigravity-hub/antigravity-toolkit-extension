@@ -4395,8 +4395,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    function openArtifactFile(filePath) {
-      vscode.postMessage({ command: 'openArtifact', filePath: filePath });
+    function openArtifactByIndex(idx) {
+      if (activePreviewData && activePreviewData.artifacts && activePreviewData.artifacts[idx]) {
+        var filePath = activePreviewData.artifacts[idx].fullPath;
+        vscode.postMessage({ command: 'openArtifact', filePath: filePath });
+      }
     }
 
     function renderConversationPreview(data) {
@@ -4539,7 +4542,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         var kb = Math.round((art.sizeBytes / 1024) * 10) / 10;
         var html = '<div class="conv-artifact-bar">';
         html += '<span>📄 <b>' + escapeHtml(art.name) + '</b> (' + kb + ' KB)</span>';
-        html += '<button type="button" class="conv-mini-btn" onclick="openArtifactFile(\'' + escapeHtml(art.fullPath.replace(/\\/g, '\\\\')) + '\')">Open in Editor</button>';
+        html += '<button type="button" class="conv-mini-btn" onclick="openArtifactByIndex(' + artIdx + ')">Open in Editor</button>';
         html += '</div>';
         html += '<div class="conv-artifact-content ' + (isRtlText(art.previewContent) ? 'is-rtl' : '') + '">' + formatMarkdown(art.previewContent) + '</div>';
 
