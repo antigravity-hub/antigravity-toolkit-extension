@@ -360,7 +360,7 @@ export class AccountService {
       return 0;
     }
 
-    // 1. Primary: check Gemini quota group (matching Shield desktop)
+    // 1. Primary: check Gemini quota group (Strictly 5-hour rolling session percentage)
     if (account.quotaGroups && account.quotaGroups.length > 0) {
       const geminiGroup = account.quotaGroups.find((g) =>
         g.displayName.toLowerCase().includes('gemini')
@@ -369,21 +369,27 @@ export class AccountService {
         const fiveH = geminiGroup.fiveHourBucket && typeof geminiGroup.fiveHourBucket.remainingPercentage === 'number'
           ? geminiGroup.fiveHourBucket.remainingPercentage
           : undefined;
+
+        if (fiveH !== undefined) {
+          return fiveH;
+        }
+
         const weekly = geminiGroup.weeklyBucket && typeof geminiGroup.weeklyBucket.remainingPercentage === 'number'
           ? geminiGroup.weeklyBucket.remainingPercentage
           : undefined;
-
-        if (fiveH !== undefined && weekly !== undefined) {
-          // If either window is exhausted (<= 0), overall health is the limiting window
-          return Math.min(fiveH, weekly);
-        }
-        if (fiveH !== undefined) return fiveH;
         if (weekly !== undefined) return weekly;
       }
     }
 
-    // 2. Secondary: check core Gemini models (e.g. Pro, High, Flash)
+    // 2. Secondary: check core Gemini models (e.g. Pro, High, Flash 5-hour quotas)
     if (account.quotas && account.quotas.length > 0) {
+      const q5 = account.quotas.find((q) => q.windowType === 'rolling_5h');
+      if (q5) {
+        return typeof q5.remainingQuota === 'number'
+          ? q5.remainingQuota
+          : Math.max(0, 100 - (q5.usagePercentage || 0));
+      }
+
       const geminiModels = account.quotas.filter((q) =>
         q.modelId.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('gemini')
       );
