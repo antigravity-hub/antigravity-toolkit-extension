@@ -74,13 +74,16 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'searchStateChanged':
           if (typeof message.contentQuery === 'string') {
-            this._lastContentSearchQuery = message.contentQuery;
+            this._lastContentSearchQuery = message.contentQuery.trim();
           }
           if (typeof message.titleQuery === 'string') {
-            this._lastTitleSearchQuery = message.titleQuery;
+            this._lastTitleSearchQuery = message.titleQuery.trim();
           }
           if (typeof message.isFocused === 'boolean') {
             this._isSearchFocused = message.isFocused;
+          }
+          if (!this._lastContentSearchQuery && !this._lastTitleSearchQuery && !this._isSearchFocused) {
+            this.scheduleWebviewUpdate();
           }
           break;
         case 'refresh':
@@ -238,8 +241,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     if (this.isUpdating) {
       return;
     }
-    // Prevent destroying the DOM while the user is actively focused or searching on the chats tab
-    if (this._isSearchFocused || (this._activeTab === 'chats' && (this._lastContentSearchQuery || this._lastTitleSearchQuery))) {
+    // Prevent destroying the DOM while the user is actively focused or searching on the chats/history tab
+    if (this._isSearchFocused || ((this._activeTab === 'history' || this._activeTab === 'chats') && (this._lastContentSearchQuery || this._lastTitleSearchQuery))) {
       return;
     }
     this.isUpdating = true;
@@ -272,10 +275,32 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         ]).catch(() => null),
       ]);
 
-      const workspaceConversations = await Promise.race([
-        this.conversationService.getActiveWorkspaceConversations(),
-        new Promise<ConversationSession[]>((res) => setTimeout(() => res(allConversations), 400))
-      ]).catch(() => allConversations);
+      // Detect currently open workspace in VS Code / Antigravity IDE
+      const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+      const currentWorkspaceName =
+        vscode.workspace.name ||
+        (currentWorkspaceFolder ? path.basename(currentWorkspaceFolder) : '');
+
+      const normCurrentFolder = currentWorkspaceFolder ? path.normalize(currentWorkspaceFolder).toLowerCase() : '';
+      const normCurrentName = currentWorkspaceName ? currentWorkspaceName.toLowerCase() : '';
+
+      const workspaceConversations = allConversations.filter((s) => {
+        if (!normCurrentFolder && !normCurrentName) return true;
+        if (s.workspacePath) {
+          const normWs = path.normalize(s.workspacePath).toLowerCase();
+          if (
+            normWs === normCurrentFolder ||
+            normWs.startsWith(normCurrentFolder + path.sep) ||
+            normCurrentFolder.startsWith(normWs + path.sep)
+          ) {
+            return true;
+          }
+        }
+        if (s.projectName && normCurrentName && s.projectName.toLowerCase() === normCurrentName) {
+          return true;
+        }
+        return false;
+      });
 
       let activeModels: ActiveChatModelsResult = {
         geminiModel: 'Gemini 3.8 Flash (Medium)',
@@ -291,12 +316,6 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           new Promise<ActiveChatModelsResult>((_, reject) => setTimeout(() => reject(new Error('timeout')), 800))
         ]);
       } catch {}
-
-      // Detect currently open workspace in VS Code / Antigravity IDE
-      const currentWorkspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
-      const currentWorkspaceName =
-        vscode.workspace.name ||
-        (currentWorkspaceFolder ? path.basename(currentWorkspaceFolder) : '');
 
       this._view.webview.html = this.renderHtml(
         activeAccount || accounts[0],
@@ -4193,15 +4212,22 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       var cInput = document.getElementById('search-content-input');
       var tInput = document.getElementById('search-titles-input');
       if (savedState) {
-        if (savedState.contentSearchQuery && cInput && !cInput.value) {
+        if (savedState.contentSearchQuery && cInput) {
           cInput.value = savedState.contentSearchQuery;
           var clearBtnC = document.getElementById('btn-clear-content');
           if (clearBtnC) clearBtnC.style.display = 'inline-block';
+          setTimeout(function() {
+            executeContentSearch();
+          }, 120);
         }
-        if (savedState.titleSearchQuery && tInput && !tInput.value) {
+        if (savedState.titleSearchQuery && tInput) {
           tInput.value = savedState.titleSearchQuery;
           var clearBtnT = document.getElementById('btn-clear-title');
           if (clearBtnT) clearBtnT.style.display = 'inline-block';
+          setTimeout(function() {
+            activeTitleFilter = (savedState.titleSearchQuery || '').trim();
+            applyTitleFilter(activeTitleFilter);
+          }, 80);
         }
       }
 
@@ -4214,7 +4240,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             var activeEl = document.activeElement;
             var stillFocused = activeEl && (activeEl.id === 'search-content-input' || activeEl.id === 'search-titles-input');
             if (!stillFocused) {
-              vscode.postMessage({ command: 'searchStateChanged', isFocused: false });
+              vscode.postMessage({ command: 'searchStateChanged', isFocused: false, contentQuery: cInput.value });
             }
           }, 200);
         });
@@ -4229,7 +4255,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             var activeEl = document.activeElement;
             var stillFocused = activeEl && (activeEl.id === 'search-content-input' || activeEl.id === 'search-titles-input');
             if (!stillFocused) {
-              vscode.postMessage({ command: 'searchStateChanged', isFocused: false });
+              vscode.postMessage({ command: 'searchStateChanged', isFocused: false, titleQuery: tInput.value });
             }
           }, 200);
         });
