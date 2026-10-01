@@ -98,13 +98,20 @@ export class LanguageServerClient {
       if (isWindows) {
         // Query process list via PowerShell CIM (supported on all modern Windows versions, replacing deprecated wmic)
         try {
+          const script = `Get-CimInstance Win32_Process -Filter "name like '%language_server%'" | Select-Object -Property ProcessId, CommandLine | ConvertTo-Json`;
+          const b64 = Buffer.from(script, 'utf16le').toString('base64');
           const { stdout: psOut } = await execAsync(
-            'powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter \'name like \'\'%language_server%\'\'\' | Select-Object -Property ProcessId, CommandLine | ConvertTo-Json"',
-            { timeout: 2500, windowsHide: true }
+            `powershell -NoProfile -NonInteractive -EncodedCommand ${b64}`,
+            { timeout: 3500, windowsHide: true }
           );
           if (psOut) {
             try {
-              const parsed = JSON.parse(psOut.trim());
+              const cleanJson = psOut.includes('[')
+                ? psOut.substring(psOut.indexOf('['))
+                : psOut.includes('{')
+                ? psOut.substring(psOut.indexOf('{'))
+                : psOut.trim();
+              const parsed = JSON.parse(cleanJson);
               const list = Array.isArray(parsed) ? parsed : [parsed];
               const candidates: { pid: string; csrfToken: string }[] = [];
 

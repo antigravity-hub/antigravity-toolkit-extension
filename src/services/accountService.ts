@@ -27,6 +27,7 @@ export class AccountService {
   private context: vscode.ExtensionContext;
   private accounts: Map<string, Account> = new Map();
   private activeEmail: string | null = null;
+  private isSwitching = false;
 
   private onDidChangeAccountsEmitter = new vscode.EventEmitter<void>();
   public readonly onDidChangeAccounts = this.onDidChangeAccountsEmitter.event;
@@ -116,137 +117,154 @@ export class AccountService {
    * 5. Notifies Shield daemon
    */
   public async switchAccount(email: string, silent = false): Promise<boolean> {
-    const target = this.accounts.get(email);
+    if (!email) return false;
+    if (this.isSwitching) {
+      console.warn('[AccountService] Account switch already in progress, skipping duplicate.');
+      return false;
+    }
+
+    const cleanEmail = email.trim();
+    const target =
+      this.accounts.get(cleanEmail) ||
+      Array.from(this.accounts.values()).find(
+        (a) => a.email.toLowerCase() === cleanEmail.toLowerCase()
+      );
+
     if (!target) {
-      vscode.window.showErrorMessage(`Account ${email} not found.`);
+      vscode.window.showErrorMessage(`Account ${email} not found in Toolkit cache.`);
       return false;
     }
 
     if (target.validationBlocked) {
       vscode.window.showErrorMessage(
-        `⚠️ Cannot switch to ${email}: Google identity verification required. Please verify in Antigravity Shield first.`
+        `⚠️ Cannot switch to ${target.email}: Google identity verification required. Please verify in Antigravity Shield first.`
       );
       return false;
     }
 
     if (target.disabled) {
       vscode.window.showErrorMessage(
-        `⚠️ Cannot switch to ${email}: Account is turned off or disabled in Antigravity Shield.`
+        `⚠️ Cannot switch to ${target.email}: Account is turned off or disabled in Antigravity Shield.`
       );
       return false;
     }
 
-    // Update active flags
-    this.activeEmail = email;
-    for (const [key, acc] of this.accounts.entries()) {
-      acc.isActive = key === email;
-    }
-    await this.persistAccounts();
-
-    const targetName = target.name || target.email.split('@')[0];
-    const accessToken = target.token?.accessToken || '';
-    const refreshToken = target.token?.refreshToken || '';
-    const expiryTimestamp = target.token?.expiryTimestamp
-      ? Math.floor(target.token.expiryTimestamp > 10000000000 ? target.token.expiryTimestamp / 1000 : target.token.expiryTimestamp)
-      : Math.floor(Date.now() / 1000) + 3600;
-
-    // 1. In-memory USS Hot-Swap with Full Model Preservation
-    let updatedProto: Buffer | null = null;
+    this.isSwitching = true;
     try {
-      const uss = (vscode as any).antigravityUnifiedStateSync;
-      if (uss) {
-        // Resolve full UserStatus preserving all 14 cascade models
-        updatedProto = await this.getFullUserStatusProto(targetName, target.email);
-        const updateB64 = wrapUserStatusInUSS(updatedProto);
-        await uss.pushSerializedUpdateIPC(updateB64);
-
-        // Set OAuth token info in USS
-        if (uss.OAuthPreferences?.setOAuthTokenInfo) {
-          await uss.OAuthPreferences.setOAuthTokenInfo({
-            accessToken,
-            refreshToken,
-            expiryDateSeconds: expiryTimestamp,
-            tokenType: 'Bearer',
-            isGcpTos: false,
-          });
-        }
-
-        // Fire handleAuthRefresh to propagate new auth context
-        try {
-          await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
-        } catch {
-          // non-fatal
-        }
+      // Update active flags
+      this.activeEmail = target.email;
+      for (const [key, acc] of this.accounts.entries()) {
+        acc.isActive = acc.email.toLowerCase() === target.email.toLowerCase();
       }
-    } catch (ussErr) {
-      console.warn('[AccountService] USS hot-swap non-fatal warning:', ussErr);
-    }
+      await this.persistAccounts();
 
-    // 2. Language Server In-Memory RPC Hot-Swap (RegisterGdmUser)
-    try {
-      const lsClient = LanguageServerClient.getInstance();
-      await lsClient.callRegisterGdmUser();
-    } catch (lsErr) {
-      console.warn('[AccountService] Language Server hot-swap warning:', lsErr);
-    }
+      const targetName = target.name || target.email.split('@')[0];
+      const accessToken = target.token?.accessToken || '';
+      const refreshToken = target.token?.refreshToken || '';
+      const expiryTimestamp = target.token?.expiryTimestamp
+        ? Math.floor(target.token.expiryTimestamp > 10000000000 ? target.token.expiryTimestamp / 1000 : target.token.expiryTimestamp)
+        : Math.floor(Date.now() / 1000) + 3600;
 
-    // 3. Write preserved auth status to SQLite state.vscdb
-    try {
-      const protoToSave = updatedProto || (await this.getFullUserStatusProto(targetName, target.email));
-      const json = JSON.stringify({
-        name: targetName,
-        apiKey: accessToken,
-        email: target.email,
-        userStatusProtoBinaryBase64: protoToSave.toString('base64'),
-      });
-      const hexAuth = Buffer.from(json, 'utf-8').toString('hex');
-      const vscdbUss = wrapUserStatusForVscdb(protoToSave);
-      const hexUss = Buffer.from(vscdbUss, 'utf-8').toString('hex');
+      // 1. In-memory USS Hot-Swap with Full Model Preservation
+      let updatedProto: Buffer | null = null;
+      try {
+        const uss = (vscode as any).antigravityUnifiedStateSync;
+        if (uss) {
+          // Resolve full UserStatus preserving all 14 cascade models
+          updatedProto = await this.getFullUserStatusProto(targetName, target.email);
+          const updateB64 = wrapUserStatusInUSS(updatedProto);
+          await uss.pushSerializedUpdateIPC(updateB64);
 
-      const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
-      if (appData) {
-        const candidateDbPaths = [
-          path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
-          path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
-        ];
-        for (const dbPath of candidateDbPaths) {
-          if (fs.existsSync(dbPath)) {
-            let written = false;
-            try {
-              const sqlite3Module = require(path.join(vscode.env.appRoot, 'node_modules', '@vscode', 'sqlite3'));
-              const db = new sqlite3Module.Database(dbPath);
-              db.serialize(() => {
-                db.run(`INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityAuthStatus', CAST(X'${hexAuth}' AS TEXT))`);
-                db.run(`INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityUnifiedStateSync.userStatus', CAST(X'${hexUss}' AS TEXT))`, () => {
-                  db.close();
+          // Set OAuth token info in USS
+          if (uss.OAuthPreferences?.setOAuthTokenInfo) {
+            await uss.OAuthPreferences.setOAuthTokenInfo({
+              accessToken,
+              refreshToken,
+              expiryDateSeconds: expiryTimestamp,
+              tokenType: 'Bearer',
+              isGcpTos: false,
+            });
+          }
+
+          // Fire handleAuthRefresh to propagate new auth context
+          try {
+            await vscode.commands.executeCommand('antigravity.handleAuthRefresh');
+          } catch {
+            // non-fatal
+          }
+        }
+      } catch (ussErr) {
+        console.warn('[AccountService] USS hot-swap non-fatal warning:', ussErr);
+      }
+
+      // 2. Language Server In-Memory RPC Hot-Swap (RegisterGdmUser)
+      try {
+        const lsClient = LanguageServerClient.getInstance();
+        await lsClient.callRegisterGdmUser();
+      } catch (lsErr) {
+        console.warn('[AccountService] Language Server hot-swap warning:', lsErr);
+      }
+
+      // 3. Write preserved auth status to SQLite state.vscdb
+      try {
+        const protoToSave = updatedProto || (await this.getFullUserStatusProto(targetName, target.email));
+        const json = JSON.stringify({
+          name: targetName,
+          apiKey: accessToken,
+          email: target.email,
+          userStatusProtoBinaryBase64: protoToSave.toString('base64'),
+        });
+        const hexAuth = Buffer.from(json, 'utf-8').toString('hex');
+        const vscdbUss = wrapUserStatusForVscdb(protoToSave);
+        const hexUss = Buffer.from(vscdbUss, 'utf-8').toString('hex');
+
+        const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
+        if (appData) {
+          const candidateDbPaths = [
+            path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb'),
+            path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb'),
+          ];
+          for (const dbPath of candidateDbPaths) {
+            if (fs.existsSync(dbPath)) {
+              let written = false;
+              try {
+                const sqlite3Module = require(path.join(vscode.env.appRoot, 'node_modules', '@vscode', 'sqlite3'));
+                const db = new sqlite3Module.Database(dbPath);
+                db.serialize(() => {
+                  db.run(`INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityAuthStatus', CAST(X'${hexAuth}' AS TEXT))`);
+                  db.run(`INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityUnifiedStateSync.userStatus', CAST(X'${hexUss}' AS TEXT))`, () => {
+                    db.close();
+                  });
                 });
-              });
-              written = true;
-            } catch {
-              // fallback
-            }
+                written = true;
+              } catch {
+                // fallback
+              }
 
-            if (!written) {
-              const sql = `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityAuthStatus', CAST(X'${hexAuth}' AS TEXT)); INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityUnifiedStateSync.userStatus', CAST(X'${hexUss}' AS TEXT));`;
-              child_process.exec(`sqlite3 "${dbPath}" "${sql}"`, { windowsHide: true }, () => {});
+              if (!written) {
+                const sql = `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityAuthStatus', CAST(X'${hexAuth}' AS TEXT)); INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityUnifiedStateSync.userStatus', CAST(X'${hexUss}' AS TEXT));`;
+                child_process.exec(`sqlite3 "${dbPath}" "${sql}"`, { windowsHide: true }, () => {});
+              }
             }
           }
         }
+      } catch {
+        // non-fatal
       }
-    } catch {
-      // non-fatal
+
+      // 4. Notify local Shield daemon & sync credentials with real UUID and Auth
+      const shield = ShieldBridge.getInstance();
+      await shield.notifyShieldSwitch(target.email, target.id);
+
+      if (!silent) {
+        vscode.window.showInformationMessage(`⚡ Switched to ${target.email}`);
+      }
+      this.onDidChangeAccountsEmitter.fire();
+
+      return true;
+    } finally {
+      this.isSwitching = false;
     }
-
-    // 4. Notify local Shield daemon & sync credentials with real UUID and Auth
-    const shield = ShieldBridge.getInstance();
-    await shield.notifyShieldSwitch(email, target.id);
-
-    if (!silent) {
-      vscode.window.showInformationMessage(`⚡ Switched to ${email}`);
-    }
-    this.onDidChangeAccountsEmitter.fire();
-
-    return true;
   }
 
   /**

@@ -939,7 +939,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               isActive
                 ? `<span class="pill-active-check">Active ✓</span>`
                 : isBlocked
-                  ? `<button class="btn-compact-verify" onclick="verifyInShield('${acc.email}')" title="${acc.validationBlockedReason || 'Verification Required in Shield. Click for instructions.'}">
+                  ? `<button class="btn-compact-verify" data-action="verify-shield" data-email="${acc.email}" onclick="verifyInShield('${acc.email}')" title="${acc.validationBlockedReason || 'Verification Required in Shield. Click for instructions.'}">
                       ⚠️ Verify
                      </button>`
                   : isDisabled
@@ -952,7 +952,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
                          </button>`
                       : isDepleted
                         ? `<span class="pill-depleted-wait" data-reset-ms="${targetResetMs}" title="Quota resets in ${resetTimerDisplay}">⏳ ${resetTimerDisplay}</span>`
-                        : `<button class="btn-compact-switch" onclick="switchAccount(this, '${acc.email}')">
+                        : `<button class="btn-compact-switch" data-action="switch-account" data-email="${acc.email}" onclick="switchAccount(this, '${acc.email}')">
                             ⚡ Switch
                            </button>`
             }
@@ -967,6 +967,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: vscode-resource: vscode-webview:; style-src 'unsafe-inline' https: vscode-resource: vscode-webview:; script-src 'unsafe-inline' https: vscode-resource: vscode-webview:; font-src https: data: vscode-resource: vscode-webview:; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:*;">
   <title>Antigravity Toolkit 2.0</title>
   <style>
     @font-face {
@@ -3228,19 +3229,19 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     <!-- Smart Responsive Tabs Navigation -->
     <div class="tab-navigation">
-      <button class="tab-btn ${activeTab === 'overview' ? 'active' : ''}" onclick="switchTab('overview')">
+      <button class="tab-btn ${activeTab === 'overview' ? 'active' : ''}" data-tab="overview" onclick="switchTab('overview')">
         <span class="tab-icon">⚡</span>
         <span>Overview</span>
       </button>
-      <button class="tab-btn ${activeTab === 'history' ? 'active' : ''}" onclick="switchTab('history')">
+      <button class="tab-btn ${activeTab === 'history' ? 'active' : ''}" data-tab="history" onclick="switchTab('history')">
         <span class="tab-icon">📜</span>
         <span>Chats</span>
       </button>
-      <button class="tab-btn ${activeTab === 'remote' ? 'active' : ''}" onclick="switchTab('remote')">
+      <button class="tab-btn ${activeTab === 'remote' ? 'active' : ''}" data-tab="remote" onclick="switchTab('remote')">
         <span class="tab-icon">📱</span>
         <span>Remote</span>
       </button>
-      <button class="tab-btn ${activeTab === 'bridge' ? 'active' : ''}" onclick="switchTab('bridge')">
+      <button class="tab-btn ${activeTab === 'bridge' ? 'active' : ''}" data-tab="bridge" onclick="switchTab('bridge')">
         <span class="tab-icon">🛡️</span>
         <span>Bridge</span>
       </button>
@@ -3540,25 +3541,100 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     const vscode = acquireVsCodeApi();
 
     function switchTab(tabId) {
-      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-
-      const targetBtn = Array.from(document.querySelectorAll('.tab-btn')).find(b => {
-        const attr = b.getAttribute('onclick');
-        return attr && attr.includes(tabId);
+      if (!tabId) return;
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        const d = btn.getAttribute('data-tab');
+        const o = btn.getAttribute('onclick') || '';
+        if (d === tabId || o.includes(tabId)) {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
       });
-      if (targetBtn) targetBtn.classList.add('active');
 
-      const targetContent = document.getElementById('tab-' + tabId);
-      if (targetContent) targetContent.classList.add('active');
+      document.querySelectorAll('.tab-content').forEach(c => {
+        if (c.id === 'tab-' + tabId) {
+          c.classList.add('active');
+        } else {
+          c.classList.remove('active');
+        }
+      });
 
       try {
         const state = vscode.getState() || {};
         state.activeTab = tabId;
         vscode.setState(state);
+      } catch (e) {}
+
+      try {
         vscode.postMessage({ command: 'tabChanged', tab: tabId });
       } catch (e) {}
     }
+
+    // Delegated click listener to guarantee switching even if inline handlers are restricted
+    document.addEventListener('click', function(e) {
+      // 1. Tab buttons
+      const tabBtn = e.target.closest('.tab-btn');
+      if (tabBtn) {
+        const tabId = tabBtn.getAttribute('data-tab');
+        if (tabId) {
+          switchTab(tabId);
+        }
+        return;
+      }
+
+      // 1.1 Modal Tabs (Turns vs Artifacts)
+      const modalTabBtn = e.target.closest('.conv-tab-btn');
+      if (modalTabBtn) {
+        const modalTabId = modalTabBtn.getAttribute('data-modaltab');
+        if (modalTabId) {
+          switchModalTab(modalTabId);
+        }
+        return;
+      }
+
+      // 1.2 Modal open raw transcript log
+      const modalRawBtn = e.target.closest('#conv-btn-open-raw');
+      if (modalRawBtn && activePreviewData && activePreviewData.sessionId) {
+        openModalTranscript(activePreviewData.sessionId);
+        return;
+      }
+
+      // 2. Compact Switch buttons
+      const switchBtn = e.target.closest('.btn-compact-switch');
+      if (switchBtn) {
+        const email = switchBtn.getAttribute('data-email');
+        if (email) {
+          switchAccount(switchBtn, email);
+        }
+        return;
+      }
+
+      // 3. Compact Verify buttons
+      const verifyBtn = e.target.closest('.btn-compact-verify');
+      if (verifyBtn) {
+        const email = verifyBtn.getAttribute('data-email');
+        if (email) {
+          verifyInShield(email);
+        }
+        return;
+      }
+
+      // 4. Auto-Switch toggle button
+      const autoBtn = e.target.closest('.btn-toggle-auto');
+      if (autoBtn) {
+        toggleAutoSwitch();
+        return;
+      }
+
+      // 5. Quota window toggle buttons
+      const quotaBtn = e.target.closest('.quota-toggle-btn');
+      if (quotaBtn) {
+        if (quotaBtn.id === 'btn-quota-5h') setQuotaWindow('5h');
+        else if (quotaBtn.id === 'btn-quota-weekly') setQuotaWindow('weekly');
+        return;
+      }
+    });
 
     // Restore persisted active tab on client load if previously saved
     try {
@@ -3603,9 +3679,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       let email = '';
       if (typeof btnOrEmail === 'string') {
         email = btnOrEmail;
-      } else {
+      } else if (btnOrEmail && btnOrEmail.nodeType) {
         btn = btnOrEmail;
-        email = emailArg;
+        email = emailArg || btn.getAttribute('data-email') || '';
+      } else {
+        email = emailArg || '';
       }
       if (!email) return;
 
@@ -3620,6 +3698,18 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         b.disabled = true;
         b.style.pointerEvents = 'none';
       });
+
+      // Safety timeout: auto re-enable buttons after 7 seconds if no response to prevent lockup
+      setTimeout(() => {
+        document.querySelectorAll('.btn-compact-switch').forEach(b => {
+          b.disabled = false;
+          b.style.pointerEvents = 'auto';
+          if (b.classList.contains('btn-loading')) {
+            b.classList.remove('btn-loading');
+            b.innerHTML = '⚡ Switch';
+          }
+        });
+      }, 7000);
 
       vscode.postMessage({ command: 'switchAccount', email: email });
     }
@@ -4315,7 +4405,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       escaped = escaped.replace(new RegExp('^---$', 'gim'), '<hr class="conv-md-hr"/>');
 
       // Preserve paragraphs outside code blocks
-      var parts = escaped.split(/(<div class="conv-code-box">[\s\S]*?<\/div>)/g);
+      var parts = escaped.split(new RegExp('(<div class="conv-code-box">[\\\\s\\\\S]*?</div>)', 'g'));
       for (var i = 0; i < parts.length; i++) {
         if (!parts[i].startsWith('<div class="conv-code-box">')) {
           parts[i] = parts[i].replace(new RegExp('\\\\n{2,}', 'g'), '<div class="conv-md-gap"></div>');
@@ -4473,10 +4563,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       if (modalTabs) {
         if (data.artifacts && data.artifacts.length > 0) {
           var turnsCount = (data.turns && data.turns.length) || 0;
-          var tabsHtml = '<button type="button" class="conv-tab-btn active" id="conv-tab-turns" onclick="switchModalTab(\'turns\')">💬 Chat Turns (' + turnsCount + ')</button>';
+          var tabsHtml = '<button type="button" class="conv-tab-btn active" id="conv-tab-turns" data-modaltab="turns">💬 Chat Turns (' + turnsCount + ')</button>';
           for (var aIdx = 0; aIdx < data.artifacts.length; aIdx++) {
             var art = data.artifacts[aIdx];
-            tabsHtml += '<button type="button" class="conv-tab-btn" id="conv-tab-art-' + aIdx + '" onclick="switchModalTab(\'art-' + aIdx + '\')">📋 ' + escapeHtml(art.name) + '</button>';
+            tabsHtml += '<button type="button" class="conv-tab-btn" id="conv-tab-art-' + aIdx + '" data-modaltab="art-' + aIdx + '">📋 ' + escapeHtml(art.name) + '</button>';
           }
           modalTabs.innerHTML = tabsHtml;
           modalTabs.style.display = 'flex';
@@ -4512,7 +4602,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             '<div style="text-align: center; padding: 30px 10px; color: #94a3b8; font-size: 11.5px;">' +
               '<div>No prompt or response logs recorded in this brain session yet.</div>' +
               '<div style="margin-top: 10px;">' +
-                '<button type="button" class="conv-action-btn" onclick="openModalTranscript(\'' + activePreviewData.sessionId + '\')">Open Raw Log File</button>' +
+                '<button type="button" class="conv-action-btn" id="conv-btn-open-raw">Open Raw Log File</button>' +
               '</div>' +
             '</div>';
           return;

@@ -509,44 +509,50 @@ export class ShieldBridge {
     // Always update local disk configuration FIRST for instant synchronization
     this.syncDiskCredentials(email, targetUuid);
 
-    for (const ep of endpoints) {
-      try {
-        const statusCode = await new Promise<number>((resolve) => {
-          const url = new URL(ep, baseUrl);
-          const headers: Record<string, string> = {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body).toString(),
-          };
-          if (apiKey) {
-            headers['Authorization'] = `Bearer ${apiKey}`;
-          }
+    const baseCandidates = Array.from(new Set([baseUrl, 'http://127.0.0.1:8045', 'http://127.0.0.1:8765'])).filter(Boolean);
 
-          const req = http.request(
-            url,
-            {
-              method: 'POST',
-              headers,
-              timeout: 3000,
-            },
-            (res) => resolve(res.statusCode || 0)
-          );
+    for (const base of baseCandidates) {
+      if (handledByShield) break;
+      for (const ep of endpoints) {
+        try {
+          const statusCode = await new Promise<number>((resolve) => {
+            const url = new URL(ep, base);
+            const headers: Record<string, string> = {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(body).toString(),
+            };
+            if (apiKey) {
+              headers['Authorization'] = `Bearer ${apiKey}`;
+            }
 
-          req.on('error', () => resolve(0));
-          req.on('timeout', () => {
-            req.destroy();
-            resolve(0);
+            const req = http.request(
+              url,
+              {
+                method: 'POST',
+                headers,
+                timeout: 2500,
+              },
+              (res) => resolve(res.statusCode || 0)
+            );
+
+            req.on('error', () => resolve(0));
+            req.on('timeout', () => {
+              req.destroy();
+              resolve(0);
+            });
+
+            req.write(body);
+            req.end();
           });
 
-          req.write(body);
-          req.end();
-        });
-
-        if (statusCode >= 200 && statusCode < 300) {
-          handledByShield = true;
-          break;
+          if (statusCode >= 200 && statusCode < 300) {
+            handledByShield = true;
+            this.detectedBaseUrl = base;
+            break;
+          }
+        } catch {
+          // try next endpoint
         }
-      } catch {
-        // try next endpoint
       }
     }
 
@@ -574,7 +580,7 @@ export class ShieldBridge {
 
           // Update ~/.gemini/google_accounts.json
           const geminiAccPath = path.join(home, '.gemini', 'google_accounts.json');
-          const gData = { active: email, old: [] };
+          const gData = { active: target.email, old: [] };
           fs.writeFileSync(geminiAccPath, JSON.stringify(gData, null, 2), 'utf8');
 
           // Update ~/.gemini/oauth_creds.json
