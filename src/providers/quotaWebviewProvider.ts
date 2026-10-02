@@ -134,8 +134,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         case 'saveTelegramConfig':
           if (this.telegramService && message.config) {
             await this.telegramService.saveConfig(message.config);
-            vscode.window.showInformationMessage('Antigravity Telegram Remote configuration saved!');
-            this.scheduleWebviewUpdate();
+            if (!message.silent) {
+              vscode.window.showInformationMessage('Antigravity Telegram Remote configuration saved!');
+              this.scheduleWebviewUpdate();
+            }
           }
           break;
         case 'testTelegramAlert':
@@ -320,8 +322,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     if (this.isUpdating) {
       return;
     }
-    // Prevent destroying the DOM while the user is actively focused or searching on the chats/history tab
-    if (this._isSearchFocused || ((this._activeTab === 'history' || this._activeTab === 'chats') && (this._lastContentSearchQuery || this._lastTitleSearchQuery))) {
+    // Prevent destroying the DOM while the user is actively focused, on remote tab, or searching
+    if (this._isSearchFocused || this._activeTab === 'remote' || ((this._activeTab === 'history' || this._activeTab === 'chats') && (this._lastContentSearchQuery || this._lastTitleSearchQuery))) {
       return;
     }
     this.isUpdating = true;
@@ -3724,6 +3726,20 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           </span>
         </div>
 
+        <!-- Quick Setup & Permissions Guide -->
+        <div style="background: rgba(45, 212, 191, 0.05); border: 1px solid rgba(45, 212, 191, 0.2); border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 11px; line-height: 1.5; color: #cbd5e1; direction: rtl; text-align: right;">
+          <div style="font-weight: 700; color: #5eead4; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+            <span>📘 راهنمای راه‌اندازی ربات و دسترسی‌های لازم:</span>
+          </div>
+          <ol style="margin-right: 18px; margin-left: 0; display: flex; flex-direction: column; gap: 5px; font-size: 10.5px;">
+            <li><b>ساخت ربات در BotFather:</b> در تلگرام به <code>@BotFather</code> دستور <code>/newbot</code> را بفرستید و توکن را در فیلد اول قرار دهید.</li>
+            <li><b>دسترسی خواندن پیام‌ها:</b> در <code>@BotFather</code> دستور <code>/setprivacy</code> را بزنید، ربات خود را انتخاب و روی <b>Disable</b> قرار دهید (تا بتواند پیام‌ها و وویس‌های داخل تاپیک را بشنود).</li>
+            <li><b>فعال‌سازی تاپیک در گروه:</b> در یک گروه تلگرام، از منوی تنظیمات گزینه <b>Topics</b> را روشن کنید (ربات نمی‌تواند خودش گروه را تاپیکی کند؛ حتماً مالک گروه با اکانت شخصی باید آن را روشن کند).</li>
+            <li><b>ادمین کردن ربات:</b> ربات را به گروه اضافه کرده و با دسترسی <b>Manage Topics</b> (مدیریت موضوع‌ها) و <b>Send Messages</b> ادمین کنید.</li>
+            <li><b>شناسه گروه:</b> شناسه سوپرگروه (با فرمت <code>-100...</code>) را در فیلد سوم وارد کنید یا در گروه دستور <code>/pair</code> را امتحان کنید.</li>
+          </ol>
+        </div>
+
         <div class="remote-form-group">
           <label class="remote-form-label">
             <span>Telegram Bot Token</span>
@@ -3735,6 +3751,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             class="remote-form-input"
             value="${escapeHtmlAttr(tgConfig.botToken)}"
             placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+            oninput="autoSaveTelegramInput()"
           />
         </div>
 
@@ -3749,6 +3766,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             class="remote-form-input"
             value="${escapeHtmlAttr(tgConfig.chatId)}"
             placeholder="e.g. 12345678"
+            oninput="autoSaveTelegramInput()"
           />
         </div>
 
@@ -3763,6 +3781,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             class="remote-form-input"
             value="${escapeHtmlAttr(tgConfig.forumSupergroupId || '')}"
             placeholder="-100xxxxxxxxxx (Enables [Project] Topics)"
+            oninput="autoSaveTelegramInput()"
           />
         </div>
 
@@ -3779,28 +3798,28 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
         <div class="remote-check-group">
           <label class="remote-check-item">
-            <input type="checkbox" id="tg-notify-complete" ${tgConfig.notifyOnCompletion ? 'checked' : ''} />
+            <input type="checkbox" id="tg-notify-complete" ${tgConfig.notifyOnCompletion ? 'checked' : ''} onchange="autoSaveTelegramInput()" />
             <span>Notify on Prompt Completion</span>
           </label>
           <label class="remote-check-item">
-            <input type="checkbox" id="tg-notify-input" ${tgConfig.notifyOnNeedInput ? 'checked' : ''} />
+            <input type="checkbox" id="tg-notify-input" ${tgConfig.notifyOnNeedInput ? 'checked' : ''} onchange="autoSaveTelegramInput()" />
             <span>Notify when Agent Needs Approval</span>
           </label>
           <label class="remote-check-item">
-            <input type="checkbox" id="tg-notify-error" ${tgConfig.notifyOnError ? 'checked' : ''} />
+            <input type="checkbox" id="tg-notify-error" ${tgConfig.notifyOnError ? 'checked' : ''} onchange="autoSaveTelegramInput()" />
             <span>Notify on Errors & Circuit Breaker Trips</span>
           </label>
         </div>
 
         <div class="remote-btn-row">
-          <button type="button" class="remote-btn remote-btn-primary" onclick="saveTelegramSettings()">
+          <button type="button" class="remote-btn remote-btn-primary" onclick="saveTelegramSettings(false)">
             <span>💾 Save Settings</span>
+          </button>
+          <button type="button" class="remote-btn remote-btn-primary" style="background: linear-gradient(135deg, #10b981, #059669); color: #fff;" onclick="sendTestTelegramAlert()" title="Send test ping to phone">
+            <span>🚀 Test Alert (ارسال پیام تست)</span>
           </button>
           <button type="button" class="remote-btn remote-btn-secondary" onclick="generateTelegramPairCode()" title="Generate 6-digit code for bot">
             <span>🔑 Pair Code</span>
-          </button>
-          <button type="button" class="remote-btn remote-btn-secondary" onclick="sendTestTelegramAlert()" title="Send test ping to phone">
-            <span>🚀 Test Alert</span>
           </button>
         </div>
       </div>
@@ -5178,7 +5197,40 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     /* ==========================================================================
        Tab 3: Remote Control & Auto-Approve Action Handlers
        ========================================================================== */
-    function saveTelegramSettings() {
+    var autoSaveTimer = null;
+    function autoSaveTelegramInput() {
+      // Persist immediately in sessionStorage
+      try {
+        var b = document.getElementById('tg-bot-token');
+        var c = document.getElementById('tg-chat-id');
+        var f = document.getElementById('tg-forum-id');
+        if (b) sessionStorage.setItem('ag_draft_tg_bot', b.value);
+        if (c) sessionStorage.setItem('ag_draft_tg_chat', c.value);
+        if (f) sessionStorage.setItem('ag_draft_tg_forum', f.value);
+      } catch (e) {}
+
+      if (autoSaveTimer) clearTimeout(autoSaveTimer);
+      autoSaveTimer = setTimeout(function() {
+        saveTelegramSettings(true);
+      }, 350);
+    }
+
+    // Restore drafts if present
+    window.addEventListener('DOMContentLoaded', function() {
+      try {
+        var b = document.getElementById('tg-bot-token');
+        var c = document.getElementById('tg-chat-id');
+        var f = document.getElementById('tg-forum-id');
+        var sB = sessionStorage.getItem('ag_draft_tg_bot');
+        var sC = sessionStorage.getItem('ag_draft_tg_chat');
+        var sF = sessionStorage.getItem('ag_draft_tg_forum');
+        if (b && !b.value && sB) b.value = sB;
+        if (c && !c.value && sC) c.value = sC;
+        if (f && !f.value && sF) f.value = sF;
+      } catch (e) {}
+    });
+
+    function saveTelegramSettings(silent) {
       var botTokenInput = document.getElementById('tg-bot-token');
       var chatIdInput = document.getElementById('tg-chat-id');
       var forumIdInput = document.getElementById('tg-forum-id');
@@ -5195,6 +5247,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
       vscode.postMessage({
         command: 'saveTelegramConfig',
+        silent: Boolean(silent),
         config: {
           enabled: Boolean(botToken && (chatId || forumSupergroupId)),
           botToken: botToken,
