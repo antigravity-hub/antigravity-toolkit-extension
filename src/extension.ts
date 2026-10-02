@@ -43,6 +43,34 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push({ dispose: () => conversationService.disposeWatchers() });
   context.subscriptions.push({ dispose: () => telegramService.dispose() });
 
+  // 1.5 Wire live conversation changes to Telegram Forum Topics
+  const lastNotifiedStepCount = new Map<string, number>();
+  context.subscriptions.push(
+    conversationService.onDidChangeConversations(async () => {
+      const tgConfig = telegramService.getConfig();
+      if (!tgConfig.enabled || !tgConfig.notifyOnCompletion) return;
+
+      const sessions = conversationService.getCachedSessions();
+      if (!sessions || sessions.length === 0) return;
+
+      const latest = sessions[0];
+      if (!latest || !latest.id) return;
+
+      const prevSteps = lastNotifiedStepCount.get(latest.id) || 0;
+      if (latest.stepCount && latest.stepCount > prevSteps) {
+        lastNotifiedStepCount.set(latest.id, latest.stepCount);
+        if (latest.stepCount >= 2 && prevSteps > 0) {
+          telegramService.notifyPromptCompleted(latest.title || 'Task Step', {
+            sessionId: latest.id,
+            projectName: latest.projectName,
+            turns: latest.stepCount,
+            tokens: latest.tokenEstimate,
+          });
+        }
+      }
+    })
+  );
+
   // 2. Initialize Webview Provider (Single Unified View)
   const quotaWebviewProvider = new QuotaWebviewProvider(
     context.extensionUri,

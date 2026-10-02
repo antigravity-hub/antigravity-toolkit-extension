@@ -9,6 +9,7 @@ import { ShieldBridge } from '../bridge/shieldBridge';
 import { LanguageServerClient, ActiveChatModelsResult } from '../bridge/languageServerClient';
 import { TelegramRemoteService } from '../services/telegramRemoteService';
 import { AutoApprovePolicyService } from '../services/autoApprovePolicyService';
+import { generateQrSvg } from '../utils/qrCode';
 
 function escapeHtmlAttr(str: string): string {
   return (str || '')
@@ -167,6 +168,41 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             await this.autoApproveService.resetDefaults();
             vscode.window.showInformationMessage('Agent Auto-Approve Policies reset to defaults.');
             this.scheduleWebviewUpdate();
+          }
+          break;
+        case 'startCloudflareTunnel':
+          try {
+            vscode.window.showInformationMessage('Starting Cloudflare Quick Tunnel via Shield daemon...');
+            const tunnelUrl = await ShieldBridge.getInstance().startCloudflareTunnel();
+            if (tunnelUrl && this.telegramService) {
+              await this.telegramService.saveConfig({ cloudflareTunnelUrl: tunnelUrl });
+              vscode.window.showInformationMessage(`Cloudflare Tunnel live: ${tunnelUrl}`);
+              this.scheduleWebviewUpdate();
+            } else if (!tunnelUrl) {
+              vscode.window.showWarningMessage('Cloudflare Tunnel is starting or Shield daemon is initializing. Please verify Shield is running on port 8045.');
+            }
+          } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to start Cloudflare tunnel: ${err?.message || err}`);
+          }
+          break;
+        case 'sendTunnelLinkToTelegram':
+          if (this.telegramService) {
+            const config = this.telegramService.getConfig();
+            const link = this.telegramService.getMagicLink(config.cloudflareTunnelUrl);
+            const msg = `🌐 <b>Antigravity Shield Live Mobile View</b>\n\n` +
+              `📱 <b>Click below to open the real-time chat view on your phone:</b>\n\n` +
+              `<code>${link}</code>`;
+            const keyboard = {
+              inline_keyboard: [
+                [{ text: '🚀 Open Mobile View', url: link }]
+              ]
+            };
+            const sent = await this.telegramService.sendTelegramMessage(msg, { reply_markup: keyboard });
+            if (sent.success) {
+              vscode.window.showInformationMessage('✅ Mobile Magic Link sent to your Telegram topic/group!');
+            } else {
+              vscode.window.showErrorMessage(`❌ Failed to send link: ${sent.error}`);
+            }
           }
           break;
         case 'openTranscript':
@@ -1043,6 +1079,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         : tgConfig.status === 'pairing'
           ? '🟡 Pairing...'
           : '⚪ Unlinked';
+
+    const magicLink = this.telegramService
+      ? this.telegramService.getMagicLink(tgConfig.cloudflareTunnelUrl)
+      : (tgConfig.cloudflareTunnelUrl || 'http://127.0.0.1:8045') + '/mobile-view';
+    const qrSvg = tgConfig.cloudflareTunnelUrl ? generateQrSvg(magicLink, 160) : '';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -3711,6 +3752,20 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           />
         </div>
 
+        <div class="remote-form-group">
+          <label class="remote-form-label">
+            <span>Forum Supergroup ID (with Topics)</span>
+            <span style="font-size: 8.5px; opacity: 0.7;">e.g. -100123456789</span>
+          </label>
+          <input
+            type="text"
+            id="tg-forum-id"
+            class="remote-form-input"
+            value="${escapeHtmlAttr(tgConfig.forumSupergroupId || '')}"
+            placeholder="-100xxxxxxxxxx (Enables [Project] Topics)"
+          />
+        </div>
+
         ${
           tgConfig.pairingCode
             ? `
@@ -3837,6 +3892,73 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           </button>
           <button type="button" class="remote-btn remote-btn-secondary" onclick="resetPolicySettings()">
             <span>🔄 Defaults</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Card 3: Cloudflare Live Remote View -->
+      <div class="remote-card" style="margin-top: 10px;">
+        <div class="remote-header-row">
+          <div class="remote-title-box">
+            <div class="remote-icon-wrapper" style="background: rgba(249, 115, 22, 0.15); border-color: #f97316;">☁️</div>
+            <div>
+              <div class="remote-title">Cloudflare Live Mobile View</div>
+              <div class="remote-desc">Zero-port-forwarding live chat timeline & voice input on smartphone</div>
+            </div>
+          </div>
+          <span class="remote-status-badge ${tgConfig.cloudflareTunnelUrl ? 'status-badge-connected' : 'status-badge-disconnected'}">
+            ${tgConfig.cloudflareTunnelUrl ? '🟢 Tunnel Live' : '⚪ Offline'}
+          </span>
+        </div>
+
+        <div class="remote-form-group">
+          <label class="remote-form-label">
+            <span>Cloudflare Tunnel URL</span>
+            <span style="font-size: 8.5px; opacity: 0.7;">https://*.trycloudflare.com</span>
+          </label>
+          <input
+            type="text"
+            id="cf-tunnel-url"
+            class="remote-form-input"
+            value="${escapeHtmlAttr(tgConfig.cloudflareTunnelUrl || '')}"
+            placeholder="Click 'Start Tunnel' or enter tunnel URL"
+          />
+        </div>
+
+        <div class="remote-form-group">
+          <label class="remote-form-label">
+            <span>Cryptographic Session Token</span>
+            <span style="font-size: 8.5px; opacity: 0.7;">24-byte hex guard</span>
+          </label>
+          <input
+            type="text"
+            id="cf-session-token"
+            class="remote-form-input"
+            value="${escapeHtmlAttr(tgConfig.sessionAuthToken || '')}"
+            readonly
+          />
+        </div>
+
+        ${
+          tgConfig.cloudflareTunnelUrl
+            ? `
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 8px 0; padding: 10px; background: rgba(0, 0, 0, 0.3); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.06);">
+          <span style="font-size: 9.5px; color: var(--seafoam-light); font-weight: 600;">📱 Scan with Phone Camera to Open:</span>
+          <div id="qrcode-display-box" style="background: #fff; padding: 6px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.4);">${qrSvg}</div>
+          <a href="${escapeHtmlAttr(magicLink)}" target="_blank" style="font-size: 9.5px; color: #38bdf8; text-decoration: underline; word-break: break-all; text-align: center;">
+            ${escapeHtmlAttr(magicLink)}
+          </a>
+        </div>
+        `
+            : ''
+        }
+
+        <div class="remote-btn-row">
+          <button type="button" class="remote-btn remote-btn-primary" onclick="startCloudflareTunnel()">
+            <span>⚡ Start 1-Click Tunnel</span>
+          </button>
+          <button type="button" class="remote-btn remote-btn-secondary" onclick="sendTunnelLinkToTelegram()" title="Send Magic Link into Telegram">
+            <span>📲 Send to Telegram</span>
           </button>
         </div>
       </div>
@@ -5059,12 +5181,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     function saveTelegramSettings() {
       var botTokenInput = document.getElementById('tg-bot-token');
       var chatIdInput = document.getElementById('tg-chat-id');
+      var forumIdInput = document.getElementById('tg-forum-id');
       var notifyCompleteInput = document.getElementById('tg-notify-complete');
       var notifyInputInput = document.getElementById('tg-notify-input');
       var notifyErrorInput = document.getElementById('tg-notify-error');
 
       var botToken = botTokenInput ? botTokenInput.value.trim() : '';
       var chatId = chatIdInput ? chatIdInput.value.trim() : '';
+      var forumSupergroupId = forumIdInput ? forumIdInput.value.trim() : '';
       var notifyComplete = notifyCompleteInput ? notifyCompleteInput.checked : true;
       var notifyInput = notifyInputInput ? notifyInputInput.checked : true;
       var notifyError = notifyErrorInput ? notifyErrorInput.checked : true;
@@ -5072,9 +5196,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       vscode.postMessage({
         command: 'saveTelegramConfig',
         config: {
-          enabled: Boolean(botToken && chatId),
+          enabled: Boolean(botToken && (chatId || forumSupergroupId)),
           botToken: botToken,
           chatId: chatId,
+          forumSupergroupId: forumSupergroupId,
           notifyOnCompletion: notifyComplete,
           notifyOnNeedInput: notifyInput,
           notifyOnError: notifyError
@@ -5088,6 +5213,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     function generateTelegramPairCode() {
       vscode.postMessage({ command: 'generatePairingCode' });
+    }
+
+    function startCloudflareTunnel() {
+      vscode.postMessage({ command: 'startCloudflareTunnel' });
+    }
+
+    function sendTunnelLinkToTelegram() {
+      vscode.postMessage({ command: 'sendTunnelLinkToTelegram' });
     }
 
     function savePolicySettings() {

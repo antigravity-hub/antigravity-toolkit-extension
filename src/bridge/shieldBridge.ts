@@ -945,6 +945,37 @@ export class ShieldBridge {
   }
 
   /**
+   * Starts Cloudflare Quick Tunnel via Shield daemon.
+   */
+  public async startCloudflareTunnel(): Promise<string | null> {
+    try {
+      const res = await this.postShieldApi<any>('/proxy/cloudflared/start', {
+        config: {
+          enabled: true,
+          mode: 'quick',
+          port: 8045,
+          use_http2: true,
+        },
+      });
+      if (res && res.data && res.data.url) {
+        return res.data.url;
+      }
+
+      // Poll status for up to 6 seconds to capture the dynamically generated trycloudflare.com URL
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const statusRes = await this.fetchShieldApi<any>('/proxy/cloudflared/status');
+        if (statusRes && statusRes.data && statusRes.data.url) {
+          return statusRes.data.url;
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Fetches real-time token consumption metrics from Shield daemon.
    */
   public async getTokenStats(): Promise<TokenUsageStats | null> {

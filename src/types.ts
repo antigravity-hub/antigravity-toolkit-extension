@@ -154,6 +154,7 @@ export interface TelegramRemoteConfig {
   enabled: boolean;
   botToken: string;
   chatId: string;
+  forumSupergroupId?: string;
   pairingCode?: string;
   pairingCodeExpires?: number;
   notifyOnCompletion: boolean;
@@ -161,6 +162,8 @@ export interface TelegramRemoteConfig {
   notifyOnError: boolean;
   lastPingTimestamp?: number;
   status: 'disconnected' | 'pairing' | 'connected';
+  cloudflareTunnelUrl?: string;
+  sessionAuthToken?: string;
 }
 
 export interface AutoApprovePolicyConfig {
