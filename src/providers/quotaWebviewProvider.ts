@@ -9,6 +9,7 @@ import { ShieldBridge } from '../bridge/shieldBridge';
 import { LanguageServerClient, ActiveChatModelsResult } from '../bridge/languageServerClient';
 import { TelegramRemoteService } from '../services/telegramRemoteService';
 import { AutoApprovePolicyService } from '../services/autoApprovePolicyService';
+import { MobileTunnelService } from '../services/mobileTunnelService';
 import { generateQrSvg } from '../utils/qrCode';
 
 function escapeHtmlAttr(str: string): string {
@@ -38,7 +39,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     private readonly autoSwitchService: AutoSwitchService,
     private readonly conversationService: ConversationService,
     private readonly telegramService?: TelegramRemoteService,
-    private readonly autoApproveService?: AutoApprovePolicyService
+    private readonly autoApproveService?: AutoApprovePolicyService,
+    private readonly mobileTunnelService?: MobileTunnelService
   ) {
     this.quotaService.onDidChangeQuotas(() => this.scheduleWebviewUpdate());
     this.accountService.onDidChangeAccounts(() => this.scheduleWebviewUpdate());
@@ -174,17 +176,58 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'startCloudflareTunnel':
           try {
-            vscode.window.showInformationMessage('Starting Cloudflare Quick Tunnel via Shield daemon...');
-            const tunnelUrl = await ShieldBridge.getInstance().startCloudflareTunnel();
-            if (tunnelUrl && this.telegramService) {
-              await this.telegramService.saveConfig({ cloudflareTunnelUrl: tunnelUrl });
-              vscode.window.showInformationMessage(`Cloudflare Tunnel live: ${tunnelUrl}`);
-              this.scheduleWebviewUpdate();
-            } else if (!tunnelUrl) {
-              vscode.window.showWarningMessage('Cloudflare Tunnel is starting or Shield daemon is initializing. Please verify Shield is running on port 8045.');
+            vscode.window.showInformationMessage('🚀 Launching Cloudflare Tunnel & Opening Mobile View...');
+            const tunnelService = this.mobileTunnelService || MobileTunnelService.getInstance();
+            const res = await tunnelService.startSmartTunnelAndOpenBrowser();
+            if (res.success && res.url) {
+              vscode.window.showInformationMessage(`✅ Cloudflare Live Tunnel: ${res.url}`);
+              const qrSvg = generateQrSvg(res.magicLink || res.url, 130);
+              if (this._view) {
+                this._view.webview.postMessage({
+                  command: 'tunnelStateChanged',
+                  isRunning: true,
+                  url: res.url,
+                  magicLink: res.magicLink,
+                  qrSvg: qrSvg
+                });
+              }
+            } else {
+              vscode.window.showErrorMessage(`❌ Tunnel Launch Failed: ${res.error || 'Unknown error'}`);
+              if (this._view) {
+                this._view.webview.postMessage({
+                  command: 'tunnelStateChanged',
+                  isRunning: false,
+                  error: res.error
+                });
+              }
             }
           } catch (err: any) {
             vscode.window.showErrorMessage(`Failed to start Cloudflare tunnel: ${err?.message || err}`);
+            if (this._view) {
+              this._view.webview.postMessage({
+                command: 'tunnelStateChanged',
+                isRunning: false,
+                error: err?.message || String(err)
+              });
+            }
+          }
+          break;
+        case 'stopCloudflareTunnel':
+          try {
+            const tunnelService = this.mobileTunnelService || MobileTunnelService.getInstance();
+            await tunnelService.stopTunnel();
+            vscode.window.showInformationMessage('🛑 Cloudflare Tunnel stopped.');
+            if (this._view) {
+              this._view.webview.postMessage({
+                command: 'tunnelStateChanged',
+                isRunning: false,
+                url: '',
+                magicLink: '',
+                qrSvg: ''
+              });
+            }
+          } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to stop tunnel: ${err?.message || err}`);
           }
           break;
         case 'sendTunnelLinkToTelegram':
@@ -1082,10 +1125,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           ? '🟡 Pairing...'
           : '⚪ Unlinked';
 
+    const isTunnelRunning = (this.mobileTunnelService && this.mobileTunnelService.isTunnelRunning()) || Boolean(tgConfig.cloudflareTunnelUrl);
     const magicLink = this.telegramService
       ? this.telegramService.getMagicLink(tgConfig.cloudflareTunnelUrl)
       : (tgConfig.cloudflareTunnelUrl || 'http://127.0.0.1:8045') + '/mobile-view';
-    const qrSvg = tgConfig.cloudflareTunnelUrl ? generateQrSvg(magicLink, 160) : '';
+    const qrSvg = (isTunnelRunning || tgConfig.cloudflareTunnelUrl) ? generateQrSvg(magicLink, 160) : '';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -3925,8 +3969,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               <div class="remote-desc">Zero-port-forwarding live chat timeline & voice input on smartphone</div>
             </div>
           </div>
-          <span class="remote-status-badge ${tgConfig.cloudflareTunnelUrl ? 'status-badge-connected' : 'status-badge-disconnected'}">
-            ${tgConfig.cloudflareTunnelUrl ? '🟢 Tunnel Live' : '⚪ Offline'}
+          <span id="cf-status-pill" class="remote-status-badge ${isTunnelRunning ? 'status-badge-connected' : 'status-badge-disconnected'}">
+            ${isTunnelRunning ? '🟢 Tunnel Live' : '⚪ Offline'}
           </span>
         </div>
 
@@ -3940,7 +3984,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             id="cf-tunnel-url"
             class="remote-form-input"
             value="${escapeHtmlAttr(tgConfig.cloudflareTunnelUrl || '')}"
-            placeholder="Click 'Start Tunnel' or enter tunnel URL"
+            placeholder="Click '1-Click Launch' or enter tunnel URL"
           />
         </div>
 
@@ -3958,26 +4002,23 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           />
         </div>
 
-        ${
-          tgConfig.cloudflareTunnelUrl
-            ? `
-        <div style="display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 8px 0; padding: 10px; background: rgba(0, 0, 0, 0.3); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.06);">
+        <div id="cf-qrcode-container" style="display: ${isTunnelRunning && magicLink ? 'flex' : 'none'}; flex-direction: column; align-items: center; gap: 8px; margin: 8px 0; padding: 10px; background: rgba(0, 0, 0, 0.3); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.06);">
           <span style="font-size: 9.5px; color: var(--seafoam-light); font-weight: 600;">📱 Scan with Phone Camera to Open:</span>
           <div id="qrcode-display-box" style="background: #fff; padding: 6px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.4);">${qrSvg}</div>
-          <a href="${escapeHtmlAttr(magicLink)}" target="_blank" style="font-size: 9.5px; color: #38bdf8; text-decoration: underline; word-break: break-all; text-align: center;">
+          <a id="cf-magic-link-anchor" href="${escapeHtmlAttr(magicLink)}" target="_blank" style="font-size: 9.5px; color: #38bdf8; text-decoration: underline; word-break: break-all; text-align: center;">
             ${escapeHtmlAttr(magicLink)}
           </a>
         </div>
-        `
-            : ''
-        }
 
         <div class="remote-btn-row">
-          <button type="button" class="remote-btn remote-btn-primary" onclick="startCloudflareTunnel()">
-            <span>⚡ Start 1-Click Tunnel</span>
+          <button type="button" id="btn-cf-launch" class="remote-btn remote-btn-primary" onclick="startCloudflareTunnel()">
+            <span>${isTunnelRunning ? '🌐 Open in Browser (باز کردن مرورگر)' : '⚡ 1-Click Launch & Connect (اتصال خودکار)'}</span>
           </button>
           <button type="button" class="remote-btn remote-btn-secondary" onclick="sendTunnelLinkToTelegram()" title="Send Magic Link into Telegram">
             <span>📲 Send to Telegram</span>
+          </button>
+          <button type="button" id="btn-cf-stop" class="remote-btn" style="display: ${isTunnelRunning ? 'inline-flex' : 'none'}; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171;" onclick="stopCloudflareTunnel()" title="Stop Cloudflare Tunnel">
+            <span>🛑 Stop</span>
           </button>
         </div>
       </div>
@@ -4636,6 +4677,53 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         renderConversationPreview(msg.data);
       }
 
+      if (msg.command === 'tunnelStateChanged') {
+        var input = document.getElementById('cf-tunnel-url');
+        if (input && msg.url !== undefined) {
+          input.value = msg.url;
+        }
+        var statusBadge = document.getElementById('cf-status-pill');
+        if (statusBadge) {
+          if (msg.isRunning) {
+            statusBadge.className = 'remote-status-badge status-badge-connected';
+            statusBadge.innerHTML = '🟢 Tunnel Live';
+          } else {
+            statusBadge.className = 'remote-status-badge status-badge-disconnected';
+            statusBadge.innerHTML = '⚪ Offline';
+          }
+        }
+        var qrWrap = document.getElementById('cf-qrcode-container');
+        var qrBox = document.getElementById('qrcode-display-box');
+        var magicA = document.getElementById('cf-magic-link-anchor');
+        if (qrWrap) {
+          if (msg.isRunning && msg.magicLink) {
+            qrWrap.style.display = 'flex';
+            if (qrBox && msg.qrSvg) qrBox.innerHTML = msg.qrSvg;
+            if (magicA) {
+              magicA.href = msg.magicLink;
+              magicA.innerText = msg.magicLink;
+            }
+          } else {
+            qrWrap.style.display = 'none';
+          }
+        }
+        var btnLaunch = document.getElementById('btn-cf-launch');
+        if (btnLaunch) {
+          btnLaunch.disabled = false;
+          if (msg.isRunning) {
+            btnLaunch.innerHTML = '<span>🌐 Open in Browser (باز کردن در مرورگر)</span>';
+          } else {
+            btnLaunch.innerHTML = '<span>⚡ 1-Click Launch & Connect (اتصال خودکار)</span>';
+          }
+        }
+        var btnStop = document.getElementById('btn-cf-stop');
+        if (btnStop) {
+          btnStop.style.display = msg.isRunning ? 'inline-flex' : 'none';
+          btnStop.disabled = false;
+          btnStop.innerHTML = '<span>🛑 Stop</span>';
+        }
+      }
+
       if (msg.command === 'contentSearchResults') {
         var input = document.getElementById('search-content-input');
         var currentVal = (input ? input.value : '').trim();
@@ -5269,7 +5357,21 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     function startCloudflareTunnel() {
+      var btn = document.getElementById('btn-cf-launch');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span>⏳ Starting Tunnel & Opening Browser...</span>';
+      }
       vscode.postMessage({ command: 'startCloudflareTunnel' });
+    }
+
+    function stopCloudflareTunnel() {
+      var btnStop = document.getElementById('btn-cf-stop');
+      if (btnStop) {
+        btnStop.disabled = true;
+        btnStop.innerHTML = '<span>⏳ Stopping...</span>';
+      }
+      vscode.postMessage({ command: 'stopCloudflareTunnel' });
     }
 
     function sendTunnelLinkToTelegram() {

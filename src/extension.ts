@@ -17,6 +17,7 @@ import { ShieldBridge } from './bridge/shieldBridge';
 import { ExtensionUpdateService } from './services/extensionUpdateService';
 import { TelegramRemoteService } from './services/telegramRemoteService';
 import { AutoApprovePolicyService } from './services/autoApprovePolicyService';
+import { MobileTunnelService } from './services/mobileTunnelService';
 
 let quotaIntervalTimer: NodeJS.Timeout | undefined;
 let heartbeatTimer: NodeJS.Timeout | undefined;
@@ -35,6 +36,7 @@ export function activate(context: vscode.ExtensionContext) {
   const updateService = ExtensionUpdateService.getInstance();
   const telegramService = TelegramRemoteService.initialize(context);
   const autoApproveService = AutoApprovePolicyService.initialize(context);
+  const mobileTunnelService = MobileTunnelService.initialize(context, conversationService, telegramService);
 
   context.subscriptions.push(networkWatchdog);
   context.subscriptions.push(shieldWatcher);
@@ -42,6 +44,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push({ dispose: () => autoSwitchService.dispose() });
   context.subscriptions.push({ dispose: () => conversationService.disposeWatchers() });
   context.subscriptions.push({ dispose: () => telegramService.dispose() });
+  context.subscriptions.push({ dispose: () => mobileTunnelService.dispose() });
 
   // 1.5 Wire live conversation changes to Telegram Forum Topics
   const lastNotifiedStepCount = new Map<string, number>();
@@ -79,7 +82,8 @@ export function activate(context: vscode.ExtensionContext) {
     autoSwitchService,
     conversationService,
     telegramService,
-    autoApproveService
+    autoApproveService,
+    mobileTunnelService
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
@@ -244,6 +248,18 @@ export function activate(context: vscode.ExtensionContext) {
           vscode.window.showInformationMessage('⚡ Antigravity AI connection refreshed and healed.');
         }
       );
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('antigravityToolkit.openMobileTunnel', async () => {
+      vscode.window.showInformationMessage('🚀 Launching Cloudflare Live Mobile View...');
+      const res = await mobileTunnelService.startSmartTunnelAndOpenBrowser();
+      if (res.success && res.url) {
+        vscode.window.showInformationMessage(`✅ Cloudflare Tunnel Live: ${res.url}`);
+      } else {
+        vscode.window.showErrorMessage(`❌ Failed: ${res.error}`);
+      }
     })
   );
 
