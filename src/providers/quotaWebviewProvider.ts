@@ -7,6 +7,8 @@ import { ConversationService } from '../services/conversationService';
 import { Account, ModelQuota, QuotaGroup, ConversationSession, TokenUsageStats } from '../types';
 import { ShieldBridge } from '../bridge/shieldBridge';
 import { LanguageServerClient, ActiveChatModelsResult } from '../bridge/languageServerClient';
+import { TelegramRemoteService } from '../services/telegramRemoteService';
+import { AutoApprovePolicyService } from '../services/autoApprovePolicyService';
 
 function escapeHtmlAttr(str: string): string {
   return (str || '')
@@ -33,7 +35,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     private readonly quotaService: QuotaService,
     private readonly accountService: AccountService,
     private readonly autoSwitchService: AutoSwitchService,
-    private readonly conversationService: ConversationService
+    private readonly conversationService: ConversationService,
+    private readonly telegramService?: TelegramRemoteService,
+    private readonly autoApproveService?: AutoApprovePolicyService
   ) {
     this.quotaService.onDidChangeQuotas(() => this.scheduleWebviewUpdate());
     this.accountService.onDidChangeAccounts(() => this.scheduleWebviewUpdate());
@@ -124,6 +128,45 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           const rotated = await this.autoSwitchService.evaluateQuotasAndRotateIfNeeded();
           if (!rotated) {
             vscode.window.showInformationMessage('Quotas are currently healthy. No rotation needed.');
+          }
+          break;
+        case 'saveTelegramConfig':
+          if (this.telegramService && message.config) {
+            await this.telegramService.saveConfig(message.config);
+            vscode.window.showInformationMessage('Antigravity Telegram Remote configuration saved!');
+            this.scheduleWebviewUpdate();
+          }
+          break;
+        case 'testTelegramAlert':
+          if (this.telegramService) {
+            const res = await this.telegramService.sendTestNotification();
+            if (res.success) {
+              vscode.window.showInformationMessage('✅ ' + res.message);
+            } else {
+              vscode.window.showErrorMessage('❌ ' + res.message);
+            }
+            this.scheduleWebviewUpdate();
+          }
+          break;
+        case 'generatePairingCode':
+          if (this.telegramService) {
+            const pairInfo = await this.telegramService.generatePairingCode();
+            vscode.window.showInformationMessage(`Pairing Code: ${pairInfo.code}. Send /pair ${pairInfo.code} to your Telegram bot.`);
+            this.scheduleWebviewUpdate();
+          }
+          break;
+        case 'saveAutoApprovePolicy':
+          if (this.autoApproveService && message.policy) {
+            await this.autoApproveService.saveConfig(message.policy);
+            vscode.window.showInformationMessage('Agent Auto-Approve Policies updated!');
+            this.scheduleWebviewUpdate();
+          }
+          break;
+        case 'resetAutoApprovePolicy':
+          if (this.autoApproveService) {
+            await this.autoApproveService.resetDefaults();
+            vscode.window.showInformationMessage('Agent Auto-Approve Policies reset to defaults.');
+            this.scheduleWebviewUpdate();
           }
           break;
         case 'openTranscript':
@@ -961,6 +1004,45 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       `;
       })
       .join('');
+
+    const tgConfig = this.telegramService
+      ? this.telegramService.getConfig()
+      : {
+          enabled: false,
+          botToken: '',
+          chatId: '',
+          notifyOnCompletion: true,
+          notifyOnNeedInput: true,
+          notifyOnError: true,
+          status: 'disconnected' as const,
+        };
+
+    const policyConfig = this.autoApproveService
+      ? this.autoApproveService.getConfig()
+      : {
+          enabled: true,
+          autoApproveReads: true,
+          autoApproveWorkspaceWrites: true,
+          autoApproveSafeCommands: true,
+          commandWhitelist: ['npm test', 'npm run build', 'cargo check', 'cargo test', 'git status', 'git diff', 'pytest'],
+          zeroTokenWasteCircuitBreaker: true,
+          maxConsecutiveFailures: 3,
+          maxTokensPerTask: 150000,
+        };
+
+    const tgStatusClass =
+      tgConfig.status === 'connected'
+        ? 'status-badge-connected'
+        : tgConfig.status === 'pairing'
+          ? 'status-badge-pairing'
+          : 'status-badge-disconnected';
+
+    const tgStatusText =
+      tgConfig.status === 'connected'
+        ? '🟢 Linked'
+        : tgConfig.status === 'pairing'
+          ? '🟡 Pairing...'
+          : '⚪ Unlinked';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -2589,21 +2671,34 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       display: flex;
       flex-direction: column;
       gap: 10px;
-      text-align: center;
+      text-align: left;
+    }
+
+    .remote-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .remote-title-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
 
     .remote-icon-wrapper {
-      width: 44px;
-      height: 44px;
+      width: 32px;
+      height: 32px;
       border-radius: 50%;
       background: var(--seafoam-bg);
       border: 1px solid var(--seafoam);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 20px;
-      margin: 0 auto;
-      box-shadow: 0 0 12px var(--seafoam-glow);
+      font-size: 16px;
+      flex-shrink: 0;
+      box-shadow: 0 0 10px var(--seafoam-glow);
     }
 
     .remote-title {
@@ -2612,26 +2707,159 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       color: #fff;
     }
 
+    .remote-status-badge {
+      font-size: 9px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 12px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .status-badge-connected {
+      background: rgba(34, 197, 94, 0.15);
+      border: 1px solid rgba(34, 197, 94, 0.4);
+      color: #4ade80;
+    }
+
+    .status-badge-pairing {
+      background: rgba(234, 179, 8, 0.15);
+      border: 1px solid rgba(234, 179, 8, 0.4);
+      color: #facc15;
+    }
+
+    .status-badge-disconnected {
+      background: rgba(148, 163, 184, 0.12);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      color: #94a3b8;
+    }
+
     .remote-desc {
       font-size: 10px;
       color: var(--text-muted);
       line-height: 1.4;
     }
 
-    .remote-action-btn {
-      background: linear-gradient(135deg, #0f766e 0%, #14b8a6 50%, #2dd4bf 100%);
-      color: #fff;
-      border: none;
-      padding: 8px 12px;
+    .remote-form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    .remote-form-label {
+      font-size: 9.5px;
+      font-weight: 600;
+      color: #cbd5e1;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .remote-form-input {
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: #f8fafc;
+      font-size: 10.5px;
+      outline: none;
+      transition: border-color 0.15s;
+      width: 100%;
+      box-sizing: border-box;
+      font-family: monospace;
+    }
+
+    .remote-form-input:focus {
+      border-color: var(--seafoam);
+      box-shadow: 0 0 6px var(--seafoam-glow);
+    }
+
+    .remote-check-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 6px;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.04);
       border-radius: 8px;
-      font-size: 11px;
-      font-weight: 700;
-      cursor: pointer;
+      padding: 8px;
+    }
+
+    .remote-check-item {
       display: flex;
       align-items: center;
-      justify-content: center;
+      gap: 7px;
+      font-size: 10px;
+      color: #e2e8f0;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .remote-check-item input[type="checkbox"] {
+      accent-color: var(--seafoam);
+      width: 13px;
+      height: 13px;
+      cursor: pointer;
+      margin: 0;
+    }
+
+    .remote-btn-row {
+      display: flex;
       gap: 6px;
-      box-shadow: 0 2px 10px var(--seafoam-glow);
+      margin-top: 8px;
+    }
+
+    .remote-btn {
+      flex: 1;
+      padding: 7px 10px;
+      border-radius: 7px;
+      font-size: 10.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: all 0.15s ease;
+      border: none;
+    }
+
+    .remote-btn-primary {
+      background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+      color: #fff;
+      box-shadow: 0 2px 8px var(--seafoam-glow);
+    }
+
+    .remote-btn-primary:hover {
+      opacity: 0.92;
+      transform: translateY(-1px);
+    }
+
+    .remote-btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #cbd5e1;
+    }
+
+    .remote-btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.09);
+      color: #fff;
+    }
+
+    .remote-pairing-box {
+      background: rgba(20, 184, 166, 0.08);
+      border: 1px dashed rgba(45, 212, 191, 0.3);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-size: 10px;
+      color: #5eead4;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 4px;
     }
 
     .remote-action-btn:disabled,
@@ -3440,26 +3668,177 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     <!-- TAB 3: REMOTE CONTROL -->
     <div id="tab-remote" class="tab-content ${activeTab === 'remote' ? 'active' : ''}">
+      <!-- Card 1: Telegram & Mobile -->
       <div class="remote-card">
-        <div class="remote-icon-wrapper">📱</div>
-        <div class="remote-title">Antigravity Mobile & Telegram</div>
-        <div class="remote-desc">
-          Monitor your AI coding sessions, receive prompt completion alerts, and control IDE tasks remotely from your smartphone or Telegram bot.
+        <div class="remote-header-row">
+          <div class="remote-title-box">
+            <div class="remote-icon-wrapper">📱</div>
+            <div>
+              <div class="remote-title">Antigravity Mobile & Telegram</div>
+              <div class="remote-desc">Remote telemetry alerts & smartphone IDE task control</div>
+            </div>
+          </div>
+          <span class="remote-status-badge ${tgStatusClass}">
+            ${tgStatusText}
+          </span>
         </div>
-        <button class="remote-action-btn" disabled>
-          <span>Soon</span>
-        </button>
+
+        <div class="remote-form-group">
+          <label class="remote-form-label">
+            <span>Telegram Bot Token</span>
+            <span style="font-size: 8.5px; opacity: 0.7;">from @BotFather</span>
+          </label>
+          <input
+            type="password"
+            id="tg-bot-token"
+            class="remote-form-input"
+            value="${escapeHtmlAttr(tgConfig.botToken)}"
+            placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+          />
+        </div>
+
+        <div class="remote-form-group">
+          <label class="remote-form-label">
+            <span>Your Telegram Chat ID</span>
+            <span style="font-size: 8.5px; opacity: 0.7;">from @userinfobot</span>
+          </label>
+          <input
+            type="text"
+            id="tg-chat-id"
+            class="remote-form-input"
+            value="${escapeHtmlAttr(tgConfig.chatId)}"
+            placeholder="e.g. 12345678"
+          />
+        </div>
+
+        ${
+          tgConfig.pairingCode
+            ? `
+        <div class="remote-pairing-box">
+          <span>Pairing Code: <b>${tgConfig.pairingCode}</b></span>
+          <span style="font-size: 8.5px;">Send <code>/pair ${tgConfig.pairingCode}</code> in Telegram</span>
+        </div>
+        `
+            : ''
+        }
+
+        <div class="remote-check-group">
+          <label class="remote-check-item">
+            <input type="checkbox" id="tg-notify-complete" ${tgConfig.notifyOnCompletion ? 'checked' : ''} />
+            <span>Notify on Prompt Completion</span>
+          </label>
+          <label class="remote-check-item">
+            <input type="checkbox" id="tg-notify-input" ${tgConfig.notifyOnNeedInput ? 'checked' : ''} />
+            <span>Notify when Agent Needs Approval</span>
+          </label>
+          <label class="remote-check-item">
+            <input type="checkbox" id="tg-notify-error" ${tgConfig.notifyOnError ? 'checked' : ''} />
+            <span>Notify on Errors & Circuit Breaker Trips</span>
+          </label>
+        </div>
+
+        <div class="remote-btn-row">
+          <button type="button" class="remote-btn remote-btn-primary" onclick="saveTelegramSettings()">
+            <span>💾 Save Settings</span>
+          </button>
+          <button type="button" class="remote-btn remote-btn-secondary" onclick="generateTelegramPairCode()" title="Generate 6-digit code for bot">
+            <span>🔑 Pair Code</span>
+          </button>
+          <button type="button" class="remote-btn remote-btn-secondary" onclick="sendTestTelegramAlert()" title="Send test ping to phone">
+            <span>🚀 Test Alert</span>
+          </button>
+        </div>
       </div>
 
-      <div class="remote-card">
-        <div class="remote-icon-wrapper">🤖</div>
-        <div class="remote-title">Agent Auto-Approve Policies</div>
-        <div class="remote-desc">
-          Zero-Token Waste execution & headless auto-accept policies for Antigravity Coding Agents.
+      <!-- Card 2: Agent Auto-Approve Policies -->
+      <div class="remote-card" style="margin-top: 10px;">
+        <div class="remote-header-row">
+          <div class="remote-title-box">
+            <div class="remote-icon-wrapper">🤖</div>
+            <div>
+              <div class="remote-title">Agent Auto-Approve Policies</div>
+              <div class="remote-desc">Zero-Token Waste execution & headless auto-accept policies</div>
+            </div>
+          </div>
+          <span class="remote-status-badge ${policyConfig.enabled ? 'status-badge-connected' : 'status-badge-disconnected'}">
+            ${policyConfig.enabled ? 'Active ✓' : 'Disabled'}
+          </span>
         </div>
-        <button class="btn-dock" style="width: 100%;" disabled>
-          <span>Soon</span>
-        </button>
+
+        <div class="remote-check-group">
+          <label class="remote-check-item" style="font-weight: 700; color: #5eead4;">
+            <input type="checkbox" id="policy-enabled" ${policyConfig.enabled ? 'checked' : ''} />
+            <span>Enable Autonomous Policy Engine</span>
+          </label>
+          <label class="remote-check-item">
+            <input type="checkbox" id="policy-reads" ${policyConfig.autoApproveReads ? 'checked' : ''} />
+            <span>Auto-Approve File Reads (Tier 1 Safe)</span>
+          </label>
+          <label class="remote-check-item">
+            <input type="checkbox" id="policy-writes" ${policyConfig.autoApproveWorkspaceWrites ? 'checked' : ''} />
+            <span>Auto-Approve Workspace File Edits (within project root)</span>
+          </label>
+          <label class="remote-check-item">
+            <input type="checkbox" id="policy-commands" ${policyConfig.autoApproveSafeCommands ? 'checked' : ''} />
+            <span>Auto-Approve Whitelisted Shell Commands</span>
+          </label>
+          <label class="remote-check-item">
+            <input type="checkbox" id="policy-circuit-breaker" ${policyConfig.zeroTokenWasteCircuitBreaker ? 'checked' : ''} />
+            <span>Zero-Token Waste Loop & Stagnation Circuit Breaker</span>
+          </label>
+        </div>
+
+        <div class="remote-form-group">
+          <label class="remote-form-label">
+            <span>Whitelisted Shell Commands</span>
+            <span style="font-size: 8.5px; opacity: 0.7;">comma separated</span>
+          </label>
+          <input
+            type="text"
+            id="policy-whitelist"
+            class="remote-form-input"
+            value="${escapeHtmlAttr(policyConfig.commandWhitelist.join(', '))}"
+            placeholder="npm test, cargo check, git status, git diff, pytest"
+          />
+        </div>
+
+        <div style="display: flex; gap: 8px;">
+          <div class="remote-form-group" style="flex: 1;">
+            <label class="remote-form-label">
+              <span>Max Failures</span>
+            </label>
+            <input
+              type="number"
+              id="policy-max-failures"
+              class="remote-form-input"
+              value="${policyConfig.maxConsecutiveFailures}"
+              min="1"
+              max="10"
+            />
+          </div>
+          <div class="remote-form-group" style="flex: 1.5;">
+            <label class="remote-form-label">
+              <span>Max Tokens / Task</span>
+            </label>
+            <input
+              type="number"
+              id="policy-max-tokens"
+              class="remote-form-input"
+              value="${policyConfig.maxTokensPerTask}"
+              step="10000"
+              min="10000"
+            />
+          </div>
+        </div>
+
+        <div class="remote-btn-row">
+          <button type="button" class="remote-btn remote-btn-primary" onclick="savePolicySettings()">
+            <span>💾 Save Policies</span>
+          </button>
+          <button type="button" class="remote-btn remote-btn-secondary" onclick="resetPolicySettings()">
+            <span>🔄 Defaults</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -4673,6 +5052,83 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         closeConversationPreview();
       }
     });
+
+    /* ==========================================================================
+       Tab 3: Remote Control & Auto-Approve Action Handlers
+       ========================================================================== */
+    function saveTelegramSettings() {
+      var botTokenInput = document.getElementById('tg-bot-token');
+      var chatIdInput = document.getElementById('tg-chat-id');
+      var notifyCompleteInput = document.getElementById('tg-notify-complete');
+      var notifyInputInput = document.getElementById('tg-notify-input');
+      var notifyErrorInput = document.getElementById('tg-notify-error');
+
+      var botToken = botTokenInput ? botTokenInput.value.trim() : '';
+      var chatId = chatIdInput ? chatIdInput.value.trim() : '';
+      var notifyComplete = notifyCompleteInput ? notifyCompleteInput.checked : true;
+      var notifyInput = notifyInputInput ? notifyInputInput.checked : true;
+      var notifyError = notifyErrorInput ? notifyErrorInput.checked : true;
+
+      vscode.postMessage({
+        command: 'saveTelegramConfig',
+        config: {
+          enabled: Boolean(botToken && chatId),
+          botToken: botToken,
+          chatId: chatId,
+          notifyOnCompletion: notifyComplete,
+          notifyOnNeedInput: notifyInput,
+          notifyOnError: notifyError
+        }
+      });
+    }
+
+    function sendTestTelegramAlert() {
+      vscode.postMessage({ command: 'testTelegramAlert' });
+    }
+
+    function generateTelegramPairCode() {
+      vscode.postMessage({ command: 'generatePairingCode' });
+    }
+
+    function savePolicySettings() {
+      var enabledInput = document.getElementById('policy-enabled');
+      var readsInput = document.getElementById('policy-reads');
+      var writesInput = document.getElementById('policy-writes');
+      var commandsInput = document.getElementById('policy-commands');
+      var cbInput = document.getElementById('policy-circuit-breaker');
+      var wlInput = document.getElementById('policy-whitelist');
+      var maxFInput = document.getElementById('policy-max-failures');
+      var maxTInput = document.getElementById('policy-max-tokens');
+
+      var enabled = enabledInput ? enabledInput.checked : true;
+      var reads = readsInput ? readsInput.checked : true;
+      var writes = writesInput ? writesInput.checked : true;
+      var commands = commandsInput ? commandsInput.checked : true;
+      var cb = cbInput ? cbInput.checked : true;
+      var wlRaw = wlInput ? wlInput.value.trim() : '';
+      var maxF = parseInt(maxFInput ? maxFInput.value : '3', 10);
+      var maxT = parseInt(maxTInput ? maxTInput.value : '150000', 10);
+
+      var wlList = wlRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+
+      vscode.postMessage({
+        command: 'saveAutoApprovePolicy',
+        policy: {
+          enabled: enabled,
+          autoApproveReads: reads,
+          autoApproveWorkspaceWrites: writes,
+          autoApproveSafeCommands: commands,
+          zeroTokenWasteCircuitBreaker: cb,
+          commandWhitelist: wlList,
+          maxConsecutiveFailures: isNaN(maxF) ? 3 : maxF,
+          maxTokensPerTask: isNaN(maxT) ? 150000 : maxT
+        }
+      });
+    }
+
+    function resetPolicySettings() {
+      vscode.postMessage({ command: 'resetAutoApprovePolicy' });
+    }
   </script>
 </body>
 </html>`;

@@ -149,3 +149,27 @@ export interface ConversationPreviewData {
   artifacts: ConversationArtifact[];
   error?: string;
 }
+
+export interface TelegramRemoteConfig {
+  enabled: boolean;
+  botToken: string;
+  chatId: string;
+  pairingCode?: string;
+  pairingCodeExpires?: number;
+  notifyOnCompletion: boolean;
+  notifyOnNeedInput: boolean;
+  notifyOnError: boolean;
+  lastPingTimestamp?: number;
+  status: 'disconnected' | 'pairing' | 'connected';
+}
+
+export interface AutoApprovePolicyConfig {
+  enabled: boolean;
+  autoApproveReads: boolean;
+  autoApproveWorkspaceWrites: boolean;
+  autoApproveSafeCommands: boolean;
+  commandWhitelist: string[];
+  zeroTokenWasteCircuitBreaker: boolean;
+  maxConsecutiveFailures: number;
+  maxTokensPerTask: number;
+}

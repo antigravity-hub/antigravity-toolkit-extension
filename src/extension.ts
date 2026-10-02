@@ -15,6 +15,8 @@ import { StatusBarManager } from './ui/statusBar';
 import { ConversationSession } from './types';
 import { ShieldBridge } from './bridge/shieldBridge';
 import { ExtensionUpdateService } from './services/extensionUpdateService';
+import { TelegramRemoteService } from './services/telegramRemoteService';
+import { AutoApprovePolicyService } from './services/autoApprovePolicyService';
 
 let quotaIntervalTimer: NodeJS.Timeout | undefined;
 let heartbeatTimer: NodeJS.Timeout | undefined;
@@ -31,12 +33,15 @@ export function activate(context: vscode.ExtensionContext) {
   const networkWatchdog = NetworkWatchdogService.initialize();
   const shieldWatcher = ShieldWatcherService.initialize(accountService, quotaService, autoSwitchService);
   const updateService = ExtensionUpdateService.getInstance();
+  const telegramService = TelegramRemoteService.initialize(context);
+  const autoApproveService = AutoApprovePolicyService.initialize(context);
 
   context.subscriptions.push(networkWatchdog);
   context.subscriptions.push(shieldWatcher);
   context.subscriptions.push(updateService.initBackgroundSchedule());
   context.subscriptions.push({ dispose: () => autoSwitchService.dispose() });
   context.subscriptions.push({ dispose: () => conversationService.disposeWatchers() });
+  context.subscriptions.push({ dispose: () => telegramService.dispose() });
 
   // 2. Initialize Webview Provider (Single Unified View)
   const quotaWebviewProvider = new QuotaWebviewProvider(
@@ -44,7 +49,9 @@ export function activate(context: vscode.ExtensionContext) {
     quotaService,
     accountService,
     autoSwitchService,
-    conversationService
+    conversationService,
+    telegramService,
+    autoApproveService
   );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
