@@ -291,6 +291,9 @@ export function activate(context: vscode.ExtensionContext) {
         quotaService.notifyQuotasUpdated();
         await autoSwitchService.evaluateQuotasAndRotateIfNeeded();
       }
+
+      // Proactive Chat Protection: Silently persist new/in-flight conversations to state.vscdb
+      conversationService.autoRecoverInterruptedSessions(true).catch(() => {});
     } catch (e) {
       console.warn('[Antigravity Toolkit] Background quota sync error:', e);
     }
