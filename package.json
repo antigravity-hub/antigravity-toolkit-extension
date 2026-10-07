@@ -106,6 +106,12 @@
         "title": "Auto-Heal AI Connection",
         "category": "Antigravity Toolkit",
         "icon": "$(pulse)"
+      },
+      {
+        "command": "antigravityToolkit.recoverInterruptedSessions",
+        "title": "Recover Interrupted/Crashed Conversations",
+        "category": "Antigravity Toolkit",
+        "icon": "$(history)"
       }
     ],
     "menus": {

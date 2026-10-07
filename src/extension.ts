@@ -106,7 +106,17 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('antigravityToolkit.refreshAll', async () => {
       quotaService.notifyQuotasUpdated();
       conversationService.refresh();
+      await conversationService.autoRecoverInterruptedSessions(false);
       await updateService.checkAndUpdate(true);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('antigravityToolkit.recoverInterruptedSessions', async () => {
+      const count = await conversationService.autoRecoverInterruptedSessions(false);
+      if (count === 0) {
+        vscode.window.showInformationMessage('تمامی مکالمات در وضعیت عادی هستند و مکالمهٔ قطع‌شده‌ای یافت نشد.');
+      }
     })
   );
 
@@ -400,6 +410,13 @@ export function activate(context: vscode.ExtensionContext) {
       console.warn('[Antigravity Toolkit] Error handling pending chat:', e);
     }
   })();
+
+  // 9. Autonomous startup recovery: checks for crashed/interrupted sessions from IDE updates or crashes
+  setTimeout(() => {
+    conversationService.autoRecoverInterruptedSessions(false).catch((e) => {
+      console.warn('[Antigravity Toolkit] Startup conversation recovery error:', e);
+    });
+  }, 2500);
 
   console.log('[Antigravity Toolkit 2.0] Activated successfully.');
 }

@@ -19,6 +19,7 @@ export class ConversationService {
   private brainWatchers: fs.FSWatcher[] = [];
   private watchDebounceTimer: NodeJS.Timeout | undefined;
   private isSelfWritingDb = false;
+  private freshlyRecoveredIds: Set<string> = new Set();
 
   private constructor() {}
 
@@ -386,93 +387,210 @@ export class ConversationService {
   }
 
   /**
+   * Resolves existing state.vscdb storage paths across Antigravity IDE and legacy profiles.
+   */
+  private getStateDbPaths(): string[] {
+    const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
+    const ideDbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
+    const fallbackDbPath = path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
+    const paths = [ideDbPath, fallbackDbPath].filter((p) => p && fs.existsSync(p));
+    return paths.length > 0 ? paths : (ideDbPath ? [ideDbPath] : []);
+  }
+
+  /**
+   * Checks if candidate text belongs to an automated agent/subagent instruction.
+   * NOTE: Persian text ([\u0600-\u06FF]) is ALWAYS treated as human input and NEVER as an automated subagent.
+   */
+  public isSubagentText(t: string): boolean {
+    if (!t) return false;
+    // Any Persian text is guaranteed to be real human input, NEVER an internal AI subagent
+    if (/[\u0600-\u06FF]/.test(t)) return false;
+    const lower = t.trim().toLowerCase();
+    return (
+      lower.startsWith('you are antigravity') ||
+      lower.startsWith('you are a') ||
+      lower.startsWith('use a very large team') ||
+      lower.startsWith('use a team') ||
+      lower.includes('team of ') ||
+      lower.includes('teamwork_preview') ||
+      lower.includes('project orchestrator') ||
+      lower.includes('explorer_') ||
+      lower.includes('reviewer_') ||
+      lower.includes('auditor_') ||
+      lower.includes('challenger_') ||
+      lower.includes('worker_') ||
+      lower.includes('spec_miner') ||
+      lower.includes('explorer survey') ||
+      lower.includes('victory auditor') ||
+      lower.includes('acceptance gate') ||
+      lower.includes('regression verification') ||
+      lower.includes('<original_task>') ||
+      lower.includes('stop all agents') ||
+      lower.includes('stop alla gents') ||
+      lower.includes('independent code review') ||
+      lower.includes('forensic auditor') ||
+      lower.includes('adversarial stress') ||
+      lower.includes('browser_subagent') ||
+      lower.includes('browser subagent')
+    );
+  }
+
+  /**
    * Autonomously injects an unindexed or crash-interrupted conversation into state.vscdb
    * (antigravityUnifiedStateSync.trajectorySummaries) so that Antigravity IDE natively recognizes it.
    */
   public injectTrajectorySummary(sessionId: string, title: string, workspacePath = ''): boolean {
-    if (!sessionId || this.isPlaceholderTitle(title)) return false;
-    this.isSelfWritingDb = true;
-    try {
-      const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
-      const ideDbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
-      const fallbackDbPath = path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
-      const dbPath = fs.existsSync(ideDbPath) ? ideDbPath : fs.existsSync(fallbackDbPath) ? fallbackDbPath : '';
-      if (!dbPath) return false;
+    return this.batchInjectTrajectorySummaries([{ sessionId, title, workspacePath }]) > 0;
+  }
 
-      // 1. Fetch current value
+  /**
+   * Autonomously batch-injects multiple unindexed or crash-interrupted conversations into state.vscdb
+   * (antigravityUnifiedStateSync.trajectorySummaries) in a single atomic SQL transaction.
+   * Writes to all active & legacy state.vscdb databases to guarantee cross-profile persistence.
+   */
+  public batchInjectTrajectorySummaries(
+    sessionsToInject: { sessionId: string; title: string; workspacePath?: string; createdAt?: number }[]
+  ): number {
+    if (!sessionsToInject || sessionsToInject.length === 0) return 0;
+    this.isSelfWritingDb = true;
+
+    try {
+      const targetDbPaths = this.getStateDbPaths();
+      if (targetDbPaths.length === 0) return 0;
+
+      const primaryDb = targetDbPaths[0];
       const querySql = "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';\n";
-      const qRes = child_process.spawnSync('sqlite3', [dbPath], {
+      const qRes = child_process.spawnSync('sqlite3', [primaryDb], {
         input: querySql,
         encoding: 'utf8',
         windowsHide: true,
         maxBuffer: 50 * 1024 * 1024,
-        timeout: 3000,
+        timeout: 4000,
       });
 
       const currentVal = (qRes.stdout || '').trim();
       const currentBuf = currentVal ? Buffer.from(currentVal, 'base64') : Buffer.alloc(0);
 
-      let filteredBuf = currentBuf;
-      // If session ID already exists in database, filter out the old entry so we can replace it with the new real title
-      if (currentBuf.includes(Buffer.from(sessionId, 'utf8'))) {
+      // Map of existing entries: id -> raw protobuf Buffer
+      const existingEntries = new Map<string, Buffer>();
+      if (currentBuf.length > 0) {
         try {
           const top = this.parseProto(currentBuf);
-          const filteredEntries: Buffer[] = [];
           for (const f of top) {
             if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
             const sub = this.parseProto(f.val);
-            let existingUuid = '';
+            let id = '';
             for (const s of sub) {
               if (s.fieldNum === 1 && s.type === 'bytes') {
-                existingUuid = s.val.toString('utf8');
+                id = s.val.toString('utf8');
               }
             }
-            if (existingUuid !== sessionId) {
-              filteredEntries.push(this.encodeBytesField(1, f.val));
+            if (id && !existingEntries.has(id)) {
+              existingEntries.set(id, f.val);
             }
           }
-          filteredBuf = Buffer.concat(filteredEntries);
-        } catch {
-          filteredBuf = currentBuf;
+        } catch {}
+      }
+
+      // If secondary database exists, import any trajectories missing in primaryDb
+      if (targetDbPaths.length > 1) {
+        const secondaryDb = targetDbPaths[1];
+        try {
+          const secRes = child_process.spawnSync('sqlite3', [secondaryDb], {
+            input: querySql,
+            encoding: 'utf8',
+            windowsHide: true,
+            maxBuffer: 50 * 1024 * 1024,
+            timeout: 4000,
+          });
+          const secVal = (secRes.stdout || '').trim();
+          if (secVal) {
+            const secBuf = Buffer.from(secVal, 'base64');
+            const secTop = this.parseProto(secBuf);
+            for (const f of secTop) {
+              if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
+              const sub = this.parseProto(f.val);
+              let id = '';
+              for (const s of sub) {
+                if (s.fieldNum === 1 && s.type === 'bytes') {
+                  id = s.val.toString('utf8');
+                }
+              }
+              if (id && !existingEntries.has(id)) {
+                existingEntries.set(id, f.val);
+              }
+            }
+          }
+        } catch {}
+      }
+
+      let newlyInjected = 0;
+      const newEntryBuffers: Buffer[] = [];
+      const now = Date.now();
+
+      for (const item of sessionsToInject) {
+        if (!item.sessionId || this.isPlaceholderTitle(item.title)) continue;
+
+        let wsUri = '';
+        if (item.workspacePath) {
+          let norm = item.workspacePath.replace(/\\/g, '/');
+          if (!norm.startsWith('/')) norm = '/' + norm;
+          wsUri = `file://${encodeURI(norm)}`;
+        }
+
+        const summaryBytes = this.serializeCascadeSummary(
+          item.sessionId,
+          item.title,
+          wsUri,
+          item.createdAt || now
+        );
+        const newEntry = this.serializeTrajectoryEntry(item.sessionId, summaryBytes);
+        newEntryBuffers.push(newEntry);
+
+        // Update in-memory trajectoryMap
+        this.trajectoryMap.set(item.sessionId, {
+          title: item.title,
+          workspace: item.workspacePath ? path.basename(item.workspacePath) : undefined,
+          workspaceFullPath: item.workspacePath || undefined,
+          updatedAt: item.createdAt || now,
+        });
+
+        this.freshlyRecoveredIds.add(item.sessionId);
+        newlyInjected++;
+      }
+
+      if (newlyInjected === 0 && targetDbPaths.length <= 1) {
+        return 0;
+      }
+
+      // Combine: new entries first, followed by existing entries that were not replaced
+      const remainingExistingBuffers: Buffer[] = [];
+      const injectedIds = new Set(sessionsToInject.map((s) => s.sessionId));
+      for (const [id, rawEntry] of existingEntries.entries()) {
+        if (!injectedIds.has(id)) {
+          remainingExistingBuffers.push(this.encodeBytesField(1, rawEntry));
         }
       }
 
-      // Convert workspacePath to file URI if provided
-      let wsUri = '';
-      if (workspacePath) {
-        let norm = workspacePath.replace(/\\/g, '/');
-        if (!norm.startsWith('/')) norm = '/' + norm;
-        wsUri = `file://${encodeURI(norm)}`;
-      }
-
-      const summaryBytes = this.serializeCascadeSummary(sessionId, title, wsUri, Date.now());
-      const newEntry = this.serializeTrajectoryEntry(sessionId, summaryBytes);
-
-      const mergedBuf = Buffer.concat([newEntry, filteredBuf]);
+      const mergedBuf = Buffer.concat([...newEntryBuffers, ...remainingExistingBuffers]);
       const mergedB64 = mergedBuf.toString('base64');
 
-      const updateSql = `UPDATE ItemTable SET value = '${mergedB64}' WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';\n`;
-      const uRes = child_process.spawnSync('sqlite3', [dbPath], {
-        input: updateSql,
-        encoding: 'utf8',
-        windowsHide: true,
-        maxBuffer: 50 * 1024 * 1024,
-        timeout: 3000,
-      });
+      const updateSql = `INSERT OR REPLACE INTO ItemTable (key, value) VALUES ('antigravityUnifiedStateSync.trajectorySummaries', '${mergedB64}');\n`;
 
-      if (uRes.status === 0) {
-        this.trajectoryMap.set(sessionId, {
-          title,
-          workspace: workspacePath ? path.basename(workspacePath) : undefined,
-          workspaceFullPath: workspacePath || undefined,
-          updatedAt: Date.now(),
+      for (const targetDb of targetDbPaths) {
+        child_process.spawnSync('sqlite3', [targetDb], {
+          input: updateSql,
+          encoding: 'utf8',
+          windowsHide: true,
+          maxBuffer: 50 * 1024 * 1024,
+          timeout: 4000,
         });
-        return true;
       }
-      return false;
+
+      return newlyInjected;
     } catch (err) {
-      console.warn('[ConversationService] Failed to inject trajectory summary:', err);
-      return false;
+      console.warn('[ConversationService] Failed to batch inject trajectory summaries:', err);
+      return 0;
     } finally {
       setTimeout(() => {
         this.isSelfWritingDb = false;
@@ -483,7 +601,7 @@ export class ConversationService {
   /**
    * Loads official conversation titles and workspaces from state.vscdb
    * (antigravityUnifiedStateSync.trajectorySummaries) with zero lag via pure Protobuf parser.
-   * Authoritative source: Antigravity IDE database only.
+   * Reads from ALL active & fallback databases to ensure no conversation is lost across updates.
    */
   private loadTrajectorySummaries(force = false): void {
     const now = Date.now();
@@ -493,108 +611,276 @@ export class ConversationService {
     this.trajectoryMap.clear();
 
     try {
-      const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
-      const ideDbPath = path.join(appData, 'Antigravity IDE', 'User', 'globalStorage', 'state.vscdb');
-      const fallbackDbPath = path.join(appData, 'Antigravity', 'User', 'globalStorage', 'state.vscdb');
-      const dbPath = fs.existsSync(ideDbPath) ? ideDbPath : fs.existsSync(fallbackDbPath) ? fallbackDbPath : '';
+      const targetDbPaths = this.getStateDbPaths();
+      if (targetDbPaths.length === 0) return;
 
-      if (!dbPath) {
-        return;
-      }
+      for (const dbPath of targetDbPaths) {
+        try {
+          const val = child_process
+            .execSync(
+              `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';"`,
+              { maxBuffer: 50 * 1024 * 1024, timeout: 7000, windowsHide: true }
+            )
+            .toString()
+            .trim();
 
-      try {
-        const val = child_process
-          .execSync(
-            `sqlite3 "${dbPath}" "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';"`,
-            { maxBuffer: 50 * 1024 * 1024, timeout: 7000, windowsHide: true }
-          )
-          .toString()
-          .trim();
+          if (!val) continue;
 
-        if (!val) return;
+          const buf = Buffer.from(val, 'base64');
+          const topFields = this.parseProto(buf);
 
-        const buf = Buffer.from(val, 'base64');
-        const topFields = this.parseProto(buf);
-
-        for (const f of topFields) {
-          if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
-          const sub = this.parseProto(f.val);
-          let uuid = '';
-          let b64Payload: Buffer | null = null;
-          for (const s of sub) {
-            if (s.fieldNum === 1 && s.type === 'bytes') {
-              uuid = s.val.toString('utf8');
-            } else if (s.fieldNum === 2 && s.type === 'bytes') {
-              b64Payload = s.val;
+          for (const f of topFields) {
+            if (f.fieldNum !== 1 || f.type !== 'bytes') continue;
+            const sub = this.parseProto(f.val);
+            let uuid = '';
+            let b64Payload: Buffer | null = null;
+            for (const s of sub) {
+              if (s.fieldNum === 1 && s.type === 'bytes') {
+                uuid = s.val.toString('utf8');
+              } else if (s.fieldNum === 2 && s.type === 'bytes') {
+                b64Payload = s.val;
+              }
             }
-          }
 
-          if (uuid && b64Payload && !this.trajectoryMap.has(uuid)) {
-            try {
-              const innerBuf = Buffer.from(b64Payload.toString('utf8'), 'base64');
-              const innerFields = this.parseProto(innerBuf);
-              let title = '';
-              let workspace = '';
-              let workspaceFullPath = '';
-              let protoTimestamp = 0;
+            if (uuid && b64Payload && !this.trajectoryMap.has(uuid)) {
+              try {
+                const innerBuf = Buffer.from(b64Payload.toString('utf8'), 'base64');
+                const innerFields = this.parseProto(innerBuf);
+                let title = '';
+                let workspace = '';
+                let workspaceFullPath = '';
+                let protoTimestamp = 0;
 
-              for (const inf of innerFields) {
-                if (inf.fieldNum === 1 && inf.type === 'bytes') {
-                  title = inf.val.toString('utf8');
-                } else if (inf.fieldNum === 7 && inf.type === 'bytes') {
-                  // Protobuf Timestamp: subfield 1 is varint seconds
-                  const tFields = this.parseProto(inf.val);
-                  for (const tf of tFields) {
-                    if (tf.fieldNum === 1 && tf.type === 'varint') {
-                      protoTimestamp = tf.val * 1000;
+                for (const inf of innerFields) {
+                  if (inf.fieldNum === 1 && inf.type === 'bytes') {
+                    title = inf.val.toString('utf8');
+                  } else if (inf.fieldNum === 7 && inf.type === 'bytes') {
+                    // Protobuf Timestamp: subfield 1 is varint seconds
+                    const tFields = this.parseProto(inf.val);
+                    for (const tf of tFields) {
+                      if (tf.fieldNum === 1 && tf.type === 'varint') {
+                        protoTimestamp = tf.val * 1000;
+                      }
                     }
-                  }
-                } else if (inf.fieldNum === 3 && inf.type === 'bytes' && !protoTimestamp) {
-                  // Fallback Created At
-                  const tFields = this.parseProto(inf.val);
-                  for (const tf of tFields) {
-                    if (tf.fieldNum === 1 && tf.type === 'varint') {
-                      protoTimestamp = tf.val * 1000;
+                  } else if (inf.fieldNum === 3 && inf.type === 'bytes' && !protoTimestamp) {
+                    // Fallback Created At
+                    const tFields = this.parseProto(inf.val);
+                    for (const tf of tFields) {
+                      if (tf.fieldNum === 1 && tf.type === 'varint') {
+                        protoTimestamp = tf.val * 1000;
+                      }
                     }
-                  }
-                } else if (inf.fieldNum === 9 && inf.type === 'bytes') {
-                  // Workspace sub-message
-                  const wFields = this.parseProto(inf.val);
-                  for (const wf of wFields) {
-                    if ((wf.fieldNum === 1 || wf.fieldNum === 2) && wf.type === 'bytes') {
-                      const rawStr = wf.val.toString('utf8');
-                      if (rawStr.startsWith('file:///')) {
-                        try {
-                          const dec = decodeURIComponent(rawStr);
-                          const clean = dec.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
-                          const norm = path.normalize(clean);
-                          workspaceFullPath = norm;
-                          workspace = path.basename(norm);
-                          break;
-                        } catch {}
+                  } else if (inf.fieldNum === 9 && inf.type === 'bytes') {
+                    // Workspace sub-message
+                    const wFields = this.parseProto(inf.val);
+                    for (const wf of wFields) {
+                      if ((wf.fieldNum === 1 || wf.fieldNum === 2) && wf.type === 'bytes') {
+                        const rawStr = wf.val.toString('utf8');
+                        if (rawStr.startsWith('file:///')) {
+                          try {
+                            const dec = decodeURIComponent(rawStr);
+                            const clean = dec.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
+                            const norm = path.normalize(clean);
+                            workspaceFullPath = norm;
+                            workspace = path.basename(norm);
+                            break;
+                          } catch {}
+                        }
                       }
                     }
                   }
                 }
-              }
 
-              if (title && title.length > 1) {
-                const updatedAt = protoTimestamp || undefined;
-                this.trajectoryMap.set(uuid, { title, workspace, workspaceFullPath, updatedAt });
+                if (title && title.length > 1) {
+                  const updatedAt = protoTimestamp || undefined;
+                  this.trajectoryMap.set(uuid, { title, workspace, workspaceFullPath, updatedAt });
+                }
+              } catch {
+                // ignore item parse error
               }
-            } catch {
-              // ignore item parse error
             }
           }
+        } catch {
+          // ignore single db error
         }
-      } catch {
-        // ignore single db error
       }
       this.lastTrajectoryLoad = now;
     } catch (e) {
       console.warn('[ConversationService] Failed to load trajectory summaries:', e);
     }
+  }
 
+  /**
+   * Autonomously scans for all unindexed or crash-interrupted conversations across
+   * brain directories and legacy DBs, batch-injects them into state.vscdb, and notifies
+   * the user once to reload window if any sessions were restored.
+   */
+  public async autoRecoverInterruptedSessions(silent = false): Promise<number> {
+    // 1. Force reload authoritative trajectories from all databases
+    this.loadTrajectorySummaries(true);
+
+    const brainDirs = this.getBrainDirectories();
+    const { pathMap } = this.getKnownWorkspaces();
+    const stagedToRecover: {
+      sessionId: string;
+      title: string;
+      workspacePath?: string;
+      createdAt?: number;
+    }[] = [];
+
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    for (const bDir of brainDirs) {
+      if (!fs.existsSync(bDir)) continue;
+      try {
+        const entries = fs.readdirSync(bDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const convId = entry.name;
+          if (!uuidRegex.test(convId)) continue;
+          // If already in trajectoryMap, it's already indexed
+          if (this.trajectoryMap.has(convId)) continue;
+
+          const compact = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+          const full = path.join(bDir, convId, '.system_generated', 'logs', 'transcript_full.jsonl');
+          const tPath = fs.existsSync(compact) ? compact : fs.existsSync(full) ? full : '';
+          if (!tPath) continue;
+
+          try {
+            const stat = fs.statSync(tPath);
+            if (stat.size < 100) continue; // Skip empty transcripts
+
+            let mtimeMs = stat.mtimeMs;
+            if (fs.existsSync(full) && full !== tPath) {
+              try {
+                const fullStat = fs.statSync(full);
+                mtimeMs = Math.max(mtimeMs, fullStat.mtimeMs);
+              } catch {}
+            }
+
+            // Read up to 65KB for robust header and prompt extraction
+            const readLen = Math.min(stat.size, 65536);
+            const fd = fs.openSync(tPath, 'r');
+            const buf = Buffer.alloc(readLen);
+            const bytesRead = fs.readSync(fd, buf, 0, readLen, 0);
+            fs.closeSync(fd);
+
+            const chunk = buf.toString('utf8', 0, bytesRead);
+            const lines = chunk.split('\n');
+
+            let userPrompt = '';
+            let isSubagent = false;
+
+            for (let i = 0; i < Math.min(lines.length, 30); i++) {
+              const line = lines[i].trim();
+              if (!line) continue;
+              try {
+                const parsed = JSON.parse(line);
+                if (parsed.type === 'USER_INPUT' && parsed.content) {
+                  let text = String(parsed.content);
+                  const reqMatch = text.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+                  if (reqMatch && reqMatch[1]) {
+                    text = reqMatch[1].trim();
+                  } else {
+                    text = text.replace(/<[^>]+>/g, '').trim();
+                  }
+                  if (text) {
+                    if (this.isSubagentText(text)) {
+                      isSubagent = true;
+                      break;
+                    }
+                    if (!userPrompt) {
+                      userPrompt = text.replace(/[\r\n\t]+/g, ' ').trim();
+                    }
+                  }
+                }
+              } catch {}
+            }
+
+            if (isSubagent) continue;
+
+            // Resolve best possible title
+            let finalTitle = this.extractAnnotationTitle(convId) || '';
+            if (!finalTitle) {
+              finalTitle = this.extractPlanTitle(bDir, convId) || '';
+            }
+            if (!finalTitle && userPrompt) {
+              finalTitle = this.sanitizeTitle(userPrompt);
+            }
+            if (!finalTitle) {
+              finalTitle = (await this.extractOfficialTitle(convId)) || '';
+            }
+
+            if (!finalTitle || this.isPlaceholderTitle(finalTitle) || finalTitle.toLowerCase().startsWith('session ')) {
+              if (userPrompt) {
+                finalTitle = userPrompt.slice(0, 50).trim();
+              } else {
+                continue; // Can't establish genuine user session
+              }
+            }
+
+            if (this.isSubagentText(finalTitle)) continue;
+
+            // Workspace resolution
+            let workspacePath: string | undefined = undefined;
+            const headerText = lines.slice(0, 20).join(' ');
+            const headerNorm = headerText.toLowerCase().replace(/\\\\/g, '/').replace(/\\/g, '/');
+
+            for (const [, wsPath] of pathMap.entries()) {
+              const normWs = wsPath.toLowerCase().replace(/\\\\/g, '/').replace(/\\/g, '/');
+              if (headerNorm.includes(normWs)) {
+                workspacePath = wsPath;
+                break;
+              }
+            }
+
+            if (!workspacePath && vscode.workspace.workspaceFolders?.[0]) {
+              const currentWs = vscode.workspace.workspaceFolders[0];
+              const currentNorm = currentWs.uri.fsPath.toLowerCase().replace(/\\\\/g, '/').replace(/\\/g, '/');
+              if (headerNorm.includes(currentNorm) || headerNorm.includes(currentWs.name.toLowerCase())) {
+                workspacePath = currentWs.uri.fsPath;
+              }
+            }
+
+            stagedToRecover.push({
+              sessionId: convId,
+              title: finalTitle,
+              workspacePath,
+              createdAt: mtimeMs,
+            });
+          } catch {}
+        }
+      } catch {}
+    }
+
+    if (stagedToRecover.length === 0) {
+      return 0;
+    }
+
+    // Sort newest first
+    stagedToRecover.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+    const recoveredCount = this.batchInjectTrajectorySummaries(stagedToRecover);
+
+    if (recoveredCount > 0) {
+      this.onDidChangeConversationsEmitter.fire();
+
+      if (!silent) {
+        vscode.window
+          .showInformationMessage(
+            `✅ [Antigravity Toolkit] تعداد ${recoveredCount} مکالمه بازیابی شد (قطع‌شده در آپدیت یا جابجایی). برای فعال‌سازی کامل در هیستوری چت، لطفاً پنجره را ریلود کنید.`,
+            '🔄 ریلود پنجره (Reload Window)',
+            'بعداً'
+          )
+          .then((choice) => {
+            if (choice?.includes('ریلود')) {
+              vscode.commands.executeCommand('workbench.action.reloadWindow');
+            }
+          });
+      }
+    }
+
+    return recoveredCount;
   }
 
   /**
@@ -801,43 +1087,7 @@ export class ConversationService {
     const sessions: ConversationSession[] = [];
     const seenIds = new Set<string>();
 
-    const isSubagentText = (t: string): boolean => {
-      if (!t) return false;
-      const lower = t.trim().toLowerCase();
-      return (
-        lower.startsWith('you are') ||
-        lower.startsWith('use a very large team') ||
-        lower.startsWith('use a team') ||
-        lower.startsWith('session ') ||
-        lower.startsWith('task:') ||
-        lower.startsWith('task ') ||
-        lower.includes('team of ') ||
-        lower.includes('teamwork_preview') ||
-        lower.includes('project orchestrator') ||
-        lower.includes('orchestrator') ||
-        lower.includes('explorer_') ||
-        lower.includes('reviewer_') ||
-        lower.includes('auditor_') ||
-        lower.includes('challenger_') ||
-        lower.includes('worker_') ||
-        lower.includes('spec_miner') ||
-        lower.includes('explorer survey') ||
-        lower.includes('victory auditor') ||
-        lower.includes('acceptance gate') ||
-        lower.includes('regression verification') ||
-        lower.includes('working directory:') ||
-        lower.includes('<original_task>') ||
-        lower.includes('stop all agents') ||
-        lower.includes('stop alla gents') ||
-        lower.includes('independent code review') ||
-        lower.includes('forensic auditor') ||
-        lower.includes('adversarial stress') ||
-        lower.includes('browser_subagent') ||
-        lower.includes('browser subagent') ||
-        lower.includes('subagent') ||
-        lower.includes('comprehensive extraction, nlp-driven')
-      );
-    };
+
 
     // 1. PRIMARY & AUTHORITATIVE SOURCE: Official Antigravity IDE Trajectories
     // Loaded in < 25ms from state.vscdb protobuf with full titles & workspaces
@@ -879,7 +1129,7 @@ export class ConversationService {
                       const reqMatch = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
                       if (reqMatch && reqMatch[1]) raw = reqMatch[1];
                       const clean = raw.replace(/<[^>]+>/g, '').replace(/[\r\n\t]+/g, ' ').trim();
-                      if (clean && !isSubagentText(clean)) {
+                      if (clean && !this.isSubagentText(clean)) {
                         previewText = clean.slice(0, 90);
                         break;
                       }
@@ -915,7 +1165,7 @@ export class ConversationService {
         continue;
       }
 
-      if (isSubagentText(finalTitle) || isSubagentText(traj.title) || isSubagentText(previewText)) {
+      if (this.isSubagentText(finalTitle) || this.isSubagentText(traj.title) || this.isSubagentText(previewText)) {
         continue;
       }
 
@@ -984,10 +1234,17 @@ export class ConversationService {
             const fStat = fs.statSync(path.join(bDir, convId));
             let mtimeMs = fStat.mtimeMs;
             const compactPath = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
+            const fullPath = path.join(bDir, convId, '.system_generated', 'logs', 'transcript_full.jsonl');
             if (fs.existsSync(compactPath)) {
               try {
                 const tStat = fs.statSync(compactPath);
                 mtimeMs = Math.max(mtimeMs, tStat.mtimeMs);
+              } catch {}
+            }
+            if (fs.existsSync(fullPath)) {
+              try {
+                const fullStat = fs.statSync(fullPath);
+                mtimeMs = Math.max(mtimeMs, fullStat.mtimeMs);
               } catch {}
             }
             folderCandidates.push({ name: convId, mtimeMs });
@@ -996,8 +1253,8 @@ export class ConversationService {
 
         folderCandidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-        // Process up to 250 most recent unindexed sessions
-        for (const cand of folderCandidates.slice(0, 250)) {
+        // Process all recent unindexed sessions
+        for (const cand of folderCandidates) {
           const convId = cand.name;
           if (seenIds.has(convId)) continue;
 
@@ -1018,30 +1275,38 @@ export class ConversationService {
           try {
             const stat = fs.statSync(tPath);
             mtime = Math.max(mtime, stat.mtimeMs);
+            if (fs.existsSync(full) && full !== tPath) {
+              try {
+                const fullStat = fs.statSync(full);
+                mtime = Math.max(mtime, fullStat.mtimeMs);
+              } catch {}
+            }
             stepCount = Math.round(stat.size / 400) || 1;
             tokenEstimate = Math.round(stat.size / 3.8);
 
-            // Read fast 32KB slice from start to parse first 15 lines without loading multi-megabyte files
+            // Read fast 64KB slice from start to parse header lines reliably
+            const readLen = Math.min(stat.size, 65536);
             const fd = fs.openSync(tPath, 'r');
-            const headBuf = Buffer.alloc(32768);
-            const bytesRead = fs.readSync(fd, headBuf, 0, 32768, 0);
+            const headBuf = Buffer.alloc(readLen);
+            const bytesRead = fs.readSync(fd, headBuf, 0, readLen, 0);
             fs.closeSync(fd);
             const chunk = headBuf.toString('utf8', 0, bytesRead);
             const lines = chunk.split('\n').filter((l) => l.trim().length > 0);
 
-            for (let i = 0; i < Math.min(lines.length, 15); i++) {
+            for (let i = 0; i < Math.min(lines.length, 25); i++) {
               try {
                 const entry = JSON.parse(lines[i]);
                 if (entry.type === 'USER_INPUT' && entry.content) {
-                  const raw = entry.content;
-                  const match = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
-                  // Real human IDE chats ALWAYS have <USER_REQUEST> tags. Subagents do not.
-                  if (!match || !match[1]) {
-                    continue;
+                  const raw = String(entry.content);
+                  const match = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+                  let cleanPrompt = '';
+                  if (match && match[1]) {
+                    cleanPrompt = match[1].trim();
+                  } else {
+                    cleanPrompt = raw.replace(/<[^>]+>/g, '').trim();
                   }
-                  const cleanPrompt = match[1].trim();
                   if (cleanPrompt) {
-                    if (isSubagentText(cleanPrompt)) {
+                    if (this.isSubagentText(cleanPrompt)) {
                       isSubagent = true;
                       break;
                     }
@@ -1075,14 +1340,15 @@ export class ConversationService {
               finalTitle = this.sanitizeTitle(userPromptTitle);
             }
 
-            // CRITICAL: Disk fallback is ONLY to recover legitimate user chats that the IDE crashed before saving.
-            // Internal subagents, background workers, and robotic runs have NO human title.
-            // If there is no genuine human title or it's a placeholder, SKIP IT completely!
             if (!finalTitle || this.isPlaceholderTitle(finalTitle) || finalTitle.toLowerCase().startsWith('session ')) {
-              continue;
+              if (userPromptTitle && !this.isSubagentText(userPromptTitle)) {
+                finalTitle = this.sanitizeTitle(userPromptTitle);
+              } else {
+                continue;
+              }
             }
 
-            if (isSubagentText(finalTitle)) continue;
+            if (this.isSubagentText(finalTitle)) continue;
 
             // Workspace resolution
             let projectName = 'General';
@@ -1530,22 +1796,25 @@ export class ConversationService {
     }
 
     // 4. Ensure recovered session is registered in Antigravity's state database
-    const isRecoveredFromDisk = !this.trajectoryMap.has(session.id);
-    if (isRecoveredFromDisk) {
+    const needsReload = this.freshlyRecoveredIds.has(session.id) || !this.trajectoryMap.has(session.id);
+    if (needsReload) {
       this.injectTrajectorySummary(session.id, session.title, session.workspacePath || '');
+      this.freshlyRecoveredIds.add(session.id);
       vscode.window
         .showInformationMessage(
-          `Recovered session "${session.title}" synced into Antigravity history.`,
-          'View Full Transcript',
-          'Reload Window'
+          `مکالمه «${session.title}» با موفقیت بازیابی و به تاریخچه اضافه شد. انتی‌گراویتی برای فعال‌سازی کامل آن در پنل چت نیاز به یک بار ریلود پنجره دارد.`,
+          '🔄 ریلود پنجره (Reload Window)',
+          '👁️ مشاهده متن در ادیتور',
+          'بعداً'
         )
         .then((choice) => {
-          if (choice === 'View Full Transcript') {
-            this.openTranscript(session);
-          } else if (choice === 'Reload Window') {
+          if (choice?.includes('ریلود')) {
             vscode.commands.executeCommand('workbench.action.reloadWindow');
+          } else if (choice?.includes('مشاهده')) {
+            this.openTranscript(session);
           }
         });
+      return;
     }
 
     // 5. Launch automation concurrently in background (DO NOT AWAIT!)

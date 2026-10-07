@@ -269,6 +269,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               await this.conversationService.openConversation(target);
             }
           }
+          break;
+        case 'autoRecoverChats':
+          await this.conversationService.autoRecoverInterruptedSessions(false);
+          this.updateWebview();
+          break;
         case 'getConversationPreview':
           if (message.sessionId) {
             try {
@@ -386,7 +391,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         Promise.race([
           this.conversationService.getConversations(),
           new Promise<ConversationSession[]>((res) =>
-            setTimeout(() => res(this.conversationService.getCachedSessions()), 600)
+            setTimeout(() => res(this.conversationService.getCachedSessions()), 2500)
           ),
         ]).catch(() => this.conversationService.getCachedSessions()),
         Promise.race([
@@ -3657,6 +3662,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         <button class="chat-scope-btn" id="btn-scope-all" onclick="switchChatScope('all')">
           <span>🌐 All Projects (${allConversations.length})</span>
         </button>
+        <button class="chat-scope-btn" id="btn-recover-chats" onclick="triggerAutoRecoverChats()" title="بازیابی خودکار مکالمات قطع‌شده و ایندکس‌نشده پس از آپدیت یا کرش" style="flex: 0 0 auto; padding: 0 8px;">
+          <span>⚡ ریکاوری خودکار</span>
+        </button>
       </div>
 
       <!-- SEARCH TOOLBAR: Title Search & Message Content Search -->
@@ -4838,6 +4846,15 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           handleTitleSearch(activeTitleFilter);
         }
       }
+    }
+
+    function triggerAutoRecoverChats() {
+      var btn = document.getElementById('btn-recover-chats');
+      if (btn) {
+        btn.classList.add('loading');
+        btn.innerHTML = '<span>⏳ ریکاوری...</span>';
+      }
+      vscode.postMessage({ command: 'autoRecoverChats' });
     }
 
     // Live countdown timer script ticking every 1 second in DOM
