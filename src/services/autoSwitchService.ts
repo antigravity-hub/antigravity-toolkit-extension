@@ -5,6 +5,7 @@ import * as os from 'os';
 import { AccountService } from './accountService';
 import { QuotaService } from './quotaService';
 import { Account, ModelQuota } from '../types';
+import { t } from '../utils/i18n';
 
 export interface AutoSwitchStatus {
   enabled: boolean;
@@ -242,17 +243,13 @@ export class AutoSwitchService {
 
         const notify = config.get<boolean>('notifyOnSwitch', true);
         if (notify) {
-          const lang = this.getPreferredLanguage();
-          let notificationTitle = `Switched from ${activeAccount.email} to ${bestCandidate.account.email} due to token exhaustion.`;
-          let statusText = `⚡ Switched to ${bestCandidate.account.email} (Quota depleted)`;
-
-          if (lang === 'fa') {
-            notificationTitle = `سوییچ شد از ${activeAccount.email} به ${bestCandidate.account.email} بخاطر اتمام توکن`;
-            statusText = `⚡ سوییچ شد به ${bestCandidate.account.email} (اتمام توکن)`;
-          } else if (lang.startsWith('zh')) {
-            notificationTitle = `已从 ${activeAccount.email} 切换至 ${bestCandidate.account.email}（Token 配额已用尽）`;
-            statusText = `⚡ 已切换至 ${bestCandidate.account.email}（配额用尽）`;
-          }
+          const notificationTitle = t('switchedAccountToast', {
+            from: activeAccount.email,
+            to: bestCandidate.account.email,
+          });
+          const statusText = t('switchedAccountStatus', {
+            to: bestCandidate.account.email,
+          });
 
           // Subtle corner toast with 8-second auto-dismissal
           vscode.window.withProgress(

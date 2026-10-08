@@ -633,6 +633,25 @@ export class ShieldBridge {
   }
 
   /**
+   * Reads configured UI language from local Shield config (~/.antigravity_shield/gui_config.json)
+   */
+  public getShieldLanguage(): string {
+    try {
+      const home = os.homedir();
+      const configPath = path.join(home, '.antigravity_shield', 'gui_config.json');
+      if (fs.existsSync(configPath)) {
+        const data = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        if (data && typeof data.language === 'string' && data.language.trim()) {
+          return data.language.trim();
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return (vscode.env.language || '').trim() || 'en';
+  }
+
+  /**
    * Proactively announces Toolkit availability to Shield via authenticated heartbeat.
    */
   public async sendHeartbeat(activeEmail?: string): Promise<boolean> {

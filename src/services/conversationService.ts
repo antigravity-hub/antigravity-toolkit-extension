@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as child_process from 'child_process';
 import * as util from 'util';
 import { ConversationSession, ConversationStep, ContentSearchResult, ContentSearchSnippet, ConversationPreviewData, ConversationArtifact, ConversationTurn } from '../types';
+import { t } from '../utils/i18n';
 
 export class ConversationService {
   private static instance: ConversationService;
@@ -866,14 +867,22 @@ export class ConversationService {
       this.onDidChangeConversationsEmitter.fire();
 
       if (!silent) {
+        const reloadBtn = t('reloadWindow');
+        const laterBtn = t('later');
         vscode.window
           .showInformationMessage(
-            `✅ [Antigravity Toolkit] تعداد ${recoveredCount} مکالمه بازیابی شد (قطع‌شده در آپدیت یا جابجایی). برای فعال‌سازی کامل در هیستوری چت، لطفاً پنجره را ریلود کنید.`,
-            '🔄 ریلود پنجره (Reload Window)',
-            'بعداً'
+            t('recoveredConversationsToast', { count: recoveredCount }),
+            reloadBtn,
+            laterBtn
           )
           .then((choice) => {
-            if (choice?.includes('ریلود')) {
+            if (
+              choice === reloadBtn ||
+              choice?.includes('Reload') ||
+              choice?.includes('ریلود') ||
+              choice?.includes('重新加载') ||
+              choice?.includes('重新載入')
+            ) {
               vscode.commands.executeCommand('workbench.action.reloadWindow');
             }
           });
@@ -1800,17 +1809,32 @@ export class ConversationService {
     if (needsReload) {
       this.injectTrajectorySummary(session.id, session.title, session.workspacePath || '');
       this.freshlyRecoveredIds.add(session.id);
+      const reloadBtn = t('reloadWindow');
+      const viewBtn = t('viewInEditor');
+      const laterBtn = t('later');
       vscode.window
         .showInformationMessage(
-          `مکالمه «${session.title}» با موفقیت بازیابی و به تاریخچه اضافه شد. انتی‌گراویتی برای فعال‌سازی کامل آن در پنل چت نیاز به یک بار ریلود پنجره دارد.`,
-          '🔄 ریلود پنجره (Reload Window)',
-          '👁️ مشاهده متن در ادیتور',
-          'بعداً'
+          t('singleConversationRecovered', { title: session.title }),
+          reloadBtn,
+          viewBtn,
+          laterBtn
         )
         .then((choice) => {
-          if (choice?.includes('ریلود')) {
+          if (
+            choice === reloadBtn ||
+            choice?.includes('Reload') ||
+            choice?.includes('ریلود') ||
+            choice?.includes('重新加载') ||
+            choice?.includes('重新載入')
+          ) {
             vscode.commands.executeCommand('workbench.action.reloadWindow');
-          } else if (choice?.includes('مشاهده')) {
+          } else if (
+            choice === viewBtn ||
+            choice?.includes('View') ||
+            choice?.includes('مشاهده') ||
+            choice?.includes('查看') ||
+            choice?.includes('檢視')
+          ) {
             this.openTranscript(session);
           }
         });

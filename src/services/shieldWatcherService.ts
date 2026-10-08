@@ -49,6 +49,7 @@ export class ShieldWatcherService implements vscode.Disposable {
     const accountsDir = path.join(shieldDir, 'accounts');
     const accountsJson = path.join(shieldDir, 'accounts.json');
     const bridgeJson = path.join(shieldDir, 'bridge_info.json');
+    const guiConfigJson = path.join(shieldDir, 'gui_config.json');
 
     // Watch bridge_info.json for live port/process restarts
     try {
@@ -60,10 +61,20 @@ export class ShieldWatcherService implements vscode.Disposable {
       console.warn('[ShieldWatcher] Could not watch bridge_info.json:', e);
     }
 
-    // Watch parent dir to catch creation of bridge_info.json or accounts.json
+    // Watch gui_config.json for live config/language changes
+    try {
+      if (fs.existsSync(guiConfigJson)) {
+        const wConfig = fs.watch(guiConfigJson, (_event) => this.onFileChanged());
+        this.watchers.push(wConfig);
+      }
+    } catch (e) {
+      console.warn('[ShieldWatcher] Could not watch gui_config.json:', e);
+    }
+
+    // Watch parent dir to catch creation of bridge_info.json, accounts.json, or gui_config.json
     try {
       const wDir = fs.watch(shieldDir, (_event, filename) => {
-        if (filename === 'bridge_info.json' || filename === 'accounts.json') {
+        if (filename === 'bridge_info.json' || filename === 'accounts.json' || filename === 'gui_config.json') {
           this.onFileChanged();
         }
       });

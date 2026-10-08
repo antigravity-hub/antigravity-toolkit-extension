@@ -11,6 +11,7 @@ import { TelegramRemoteService } from '../services/telegramRemoteService';
 import { AutoApprovePolicyService } from '../services/autoApprovePolicyService';
 import { MobileTunnelService } from '../services/mobileTunnelService';
 import { generateQrSvg } from '../utils/qrCode';
+import { t } from '../utils/i18n';
 
 function escapeHtmlAttr(str: string): string {
   return (str || '')
@@ -3662,8 +3663,8 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         <button class="chat-scope-btn" id="btn-scope-all" onclick="switchChatScope('all')">
           <span>🌐 All Projects (${allConversations.length})</span>
         </button>
-        <button class="chat-scope-btn" id="btn-recover-chats" onclick="triggerAutoRecoverChats()" title="بازیابی خودکار مکالمات قطع‌شده و ایندکس‌نشده پس از آپدیت یا کرش" style="flex: 0 0 auto; padding: 0 8px;">
-          <span>⚡ ریکاوری خودکار</span>
+        <button class="chat-scope-btn" id="btn-recover-chats" onclick="triggerAutoRecoverChats()" title="${escapeHtmlAttr(t('autoRecoverTooltip'))}" style="flex: 0 0 auto; padding: 0 8px;">
+          <span>${t('autoRecoverBtn')}</span>
         </button>
       </div>
 
@@ -3679,7 +3680,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               class="chat-search-input"
               dir="auto"
               value="${escapeHtmlAttr(savedTitleQuery)}"
-              placeholder="Search titles / جستجو در تیترها..."
+              placeholder="${escapeHtmlAttr(t('searchTitlesPlaceholder'))}"
               oninput="handleTitleSearch(this.value)"
               autocomplete="off"
               spellcheck="false"
@@ -3705,7 +3706,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
               class="chat-search-input"
               dir="auto"
               value="${escapeHtmlAttr(savedContentQuery)}"
-              placeholder="Search conversation text / جستجو در متن مکالمات..."
+              placeholder="${escapeHtmlAttr(t('searchContentPlaceholder'))}"
               oninput="handleContentSearchInput(this.value)"
               onkeydown="if(event.key === 'Enter') executeContentSearch()"
               autocomplete="off"
@@ -4852,7 +4853,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       var btn = document.getElementById('btn-recover-chats');
       if (btn) {
         btn.classList.add('loading');
-        btn.innerHTML = '<span>⏳ ریکاوری...</span>';
+        btn.innerHTML = '<span>' + ${JSON.stringify(t('recoveringBtn'))} + '</span>';
       }
       vscode.postMessage({ command: 'autoRecoverChats' });
     }

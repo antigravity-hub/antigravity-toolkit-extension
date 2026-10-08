@@ -18,6 +18,7 @@ import { ExtensionUpdateService } from './services/extensionUpdateService';
 import { TelegramRemoteService } from './services/telegramRemoteService';
 import { AutoApprovePolicyService } from './services/autoApprovePolicyService';
 import { MobileTunnelService } from './services/mobileTunnelService';
+import { t } from './utils/i18n';
 
 let quotaIntervalTimer: NodeJS.Timeout | undefined;
 let heartbeatTimer: NodeJS.Timeout | undefined;
@@ -115,7 +116,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('antigravityToolkit.recoverInterruptedSessions', async () => {
       const count = await conversationService.autoRecoverInterruptedSessions(false);
       if (count === 0) {
-        vscode.window.showInformationMessage('تمامی مکالمات در وضعیت عادی هستند و مکالمهٔ قطع‌شده‌ای یافت نشد.');
+        vscode.window.showInformationMessage(t('noInterruptedFound'));
       }
     })
   );
