@@ -169,6 +169,20 @@ export function generateQrSvg(text: string, sizePx = 180): string {
     if (!isFunction[N - 1 - i][8]) setFunc(N - 1 - i, 8, 0);
   }
 
+  // 4b. Reserve version info for version >= 7
+  if (verInfo.version >= 7) {
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 6; c++) {
+        setFunc(N - 11 + r, c, 0);
+      }
+    }
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 3; c++) {
+        setFunc(r, N - 11 + c, 0);
+      }
+    }
+  }
+
   // 5. Build Bitstream (Byte mode = 0100)
   const bits: number[] = [];
   function pushBits(val: number, count: number) {
@@ -299,8 +313,36 @@ export function generateQrSvg(text: string, sizePx = 180): string {
     matrix[fmtCoords2[i][0]][fmtCoords2[i][1]] = formatBits[i];
   }
 
-  // 9. Generate SVG
-  const quietZone = 2;
+  // 8b. Version Information for Version >= 7 (BCH(18,6))
+  if (verInfo.version >= 7) {
+    let rem = verInfo.version << 12;
+    const poly = 0x1F25;
+    for (let i = 17; i >= 12; i--) {
+      if ((rem >>> i) & 1) {
+        rem ^= (poly << (i - 12));
+      }
+    }
+    const fullVersionBits = (verInfo.version << 12) | rem;
+
+    // Bottom-left: 3 rows (N-11 to N-9) x 6 columns (0 to 5)
+    for (let c = 0; c < 6; c++) {
+      for (let r = 0; r < 3; r++) {
+        const bit = (fullVersionBits >>> (c * 3 + r)) & 1;
+        matrix[N - 11 + r][c] = bit;
+      }
+    }
+
+    // Top-right: 6 rows (0 to 5) x 3 columns (N-11 to N-9)
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 3; c++) {
+        const bit = (fullVersionBits >>> (r * 3 + c)) & 1;
+        matrix[r][N - 11 + c] = bit;
+      }
+    }
+  }
+
+  // 9. Generate SVG with standard 4-module quiet zone
+  const quietZone = 4;
   const totalModules = N + quietZone * 2;
   const cellSize = 5;
   const viewBoxSize = totalModules * cellSize;
@@ -316,7 +358,7 @@ export function generateQrSvg(text: string, sizePx = 180): string {
     }
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${viewBoxSize} ${viewBoxSize}" width="${sizePx}" height="${sizePx}" style="display:block; shape-rendering:crispEdges; border-radius:6px; background:#fff;">` +
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${viewBoxSize} ${viewBoxSize}" width="${sizePx}" height="${sizePx}" style="display:block; shape-rendering:crispEdges; border-radius:8px; background:#ffffff;">` +
     `<rect width="${viewBoxSize}" height="${viewBoxSize}" fill="#ffffff"/>` +
     `<path d="${pathD}" fill="#0f172a"/>` +
     `</svg>`;

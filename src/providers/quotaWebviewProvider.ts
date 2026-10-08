@@ -11,7 +11,7 @@ import { TelegramRemoteService } from '../services/telegramRemoteService';
 import { AutoApprovePolicyService } from '../services/autoApprovePolicyService';
 import { MobileTunnelService } from '../services/mobileTunnelService';
 import { generateQrSvg } from '../utils/qrCode';
-import { t } from '../utils/i18n';
+import { t, isRtlLanguage } from '../utils/i18n';
 
 function escapeHtmlAttr(str: string): string {
   return (str || '')
@@ -182,7 +182,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             const res = await tunnelService.startSmartTunnelAndOpenBrowser();
             if (res.success && res.url) {
               vscode.window.showInformationMessage(`✅ Cloudflare Live Tunnel: ${res.url}`);
-              const qrSvg = generateQrSvg(res.magicLink || res.url, 130);
+              const qrSvg = generateQrSvg(res.magicLink || res.url, 200);
               if (this._view) {
                 this._view.webview.postMessage({
                   command: 'tunnelStateChanged',
@@ -1135,7 +1135,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     const magicLink = this.telegramService
       ? this.telegramService.getMagicLink(tgConfig.cloudflareTunnelUrl)
       : (tgConfig.cloudflareTunnelUrl || 'http://127.0.0.1:8045') + '/mobile-view';
-    const qrSvg = (isTunnelRunning || tgConfig.cloudflareTunnelUrl) ? generateQrSvg(magicLink, 160) : '';
+    const qrSvg = (isTunnelRunning || tgConfig.cloudflareTunnelUrl) ? generateQrSvg(magicLink, 200) : '';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -3780,16 +3780,16 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         </div>
 
         <!-- Quick Setup & Permissions Guide -->
-        <div style="background: rgba(45, 212, 191, 0.05); border: 1px solid rgba(45, 212, 191, 0.2); border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 11px; line-height: 1.5; color: #cbd5e1; direction: rtl; text-align: right;">
+        <div style="background: rgba(45, 212, 191, 0.05); border: 1px solid rgba(45, 212, 191, 0.2); border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 11px; line-height: 1.5; color: #cbd5e1; direction: ${isRtlLanguage() ? 'rtl' : 'ltr'}; text-align: ${isRtlLanguage() ? 'right' : 'left'};">
           <div style="font-weight: 700; color: #5eead4; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
-            <span>📘 راهنمای راه‌اندازی ربات و دسترسی‌های لازم:</span>
+            <span>${t('tgGuideTitle')}</span>
           </div>
-          <ol style="margin-right: 18px; margin-left: 0; display: flex; flex-direction: column; gap: 5px; font-size: 10.5px;">
-            <li><b>ساخت ربات در BotFather:</b> در تلگرام به <code>@BotFather</code> دستور <code>/newbot</code> را بفرستید و توکن را در فیلد اول قرار دهید.</li>
-            <li><b>دسترسی خواندن پیام‌ها:</b> در <code>@BotFather</code> دستور <code>/setprivacy</code> را بزنید، ربات خود را انتخاب و روی <b>Disable</b> قرار دهید (تا بتواند پیام‌ها و وویس‌های داخل تاپیک را بشنود).</li>
-            <li><b>فعال‌سازی تاپیک در گروه:</b> در یک گروه تلگرام، از منوی تنظیمات گزینه <b>Topics</b> را روشن کنید (ربات نمی‌تواند خودش گروه را تاپیکی کند؛ حتماً مالک گروه با اکانت شخصی باید آن را روشن کند).</li>
-            <li><b>ادمین کردن ربات:</b> ربات را به گروه اضافه کرده و با دسترسی <b>Manage Topics</b> (مدیریت موضوع‌ها) و <b>Send Messages</b> ادمین کنید.</li>
-            <li><b>شناسه گروه:</b> شناسه سوپرگروه (با فرمت <code>-100...</code>) را در فیلد سوم وارد کنید یا در گروه دستور <code>/pair</code> را امتحان کنید.</li>
+          <ol style="${isRtlLanguage() ? 'margin-right: 18px; margin-left: 0;' : 'margin-left: 18px; margin-right: 0;'} display: flex; flex-direction: column; gap: 5px; font-size: 10.5px;">
+            <li><b>${t('tgGuideStep1_label')}</b> ${t('tgGuideStep1_desc')}</li>
+            <li><b>${t('tgGuideStep2_label')}</b> ${t('tgGuideStep2_desc')}</li>
+            <li><b>${t('tgGuideStep3_label')}</b> ${t('tgGuideStep3_desc')}</li>
+            <li><b>${t('tgGuideStep4_label')}</b> ${t('tgGuideStep4_desc')}</li>
+            <li><b>${t('tgGuideStep5_label')}</b> ${t('tgGuideStep5_desc')}</li>
           </ol>
         </div>
 
@@ -3869,7 +3869,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             <span>💾 Save Settings</span>
           </button>
           <button type="button" class="remote-btn remote-btn-primary" style="background: linear-gradient(135deg, #10b981, #059669); color: #fff;" onclick="sendTestTelegramAlert()" title="Send test ping to phone">
-            <span>🚀 Test Alert (ارسال پیام تست)</span>
+            <span>${t('testAlertBtn')}</span>
           </button>
           <button type="button" class="remote-btn remote-btn-secondary" onclick="generateTelegramPairCode()" title="Generate 6-digit code for bot">
             <span>🔑 Pair Code</span>
@@ -4006,22 +4006,25 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             type="text"
             id="cf-session-token"
             class="remote-form-input"
-            value="${escapeHtmlAttr(tgConfig.sessionAuthToken || '')}"
+            value="${escapeHtmlAttr(this.telegramService ? this.telegramService.getSessionAuthToken() : (tgConfig.sessionAuthToken || ''))}"
             readonly
           />
         </div>
 
-        <div id="cf-qrcode-container" style="display: ${isTunnelRunning && magicLink ? 'flex' : 'none'}; flex-direction: column; align-items: center; gap: 8px; margin: 8px 0; padding: 10px; background: rgba(0, 0, 0, 0.3); border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.06);">
-          <span style="font-size: 9.5px; color: var(--seafoam-light); font-weight: 600;">📱 Scan with Phone Camera to Open:</span>
-          <div id="qrcode-display-box" style="background: #fff; padding: 6px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.4);">${qrSvg}</div>
-          <a id="cf-magic-link-anchor" href="${escapeHtmlAttr(magicLink)}" target="_blank" style="font-size: 9.5px; color: #38bdf8; text-decoration: underline; word-break: break-all; text-align: center;">
+        <div id="cf-qrcode-container" style="display: ${isTunnelRunning && magicLink ? 'flex' : 'none'}; flex-direction: column; align-items: center; gap: 10px; margin: 10px 0; padding: 12px 10px; background: rgba(0, 0, 0, 0.4); border-radius: 12px; border: 1px solid rgba(45, 212, 191, 0.2);">
+          <span style="font-size: 11px; color: var(--seafoam-light); font-weight: 700; letter-spacing: 0.3px;">📱 Scan with Phone Camera to Open (اسکن با دوربین موبایل):</span>
+          <div id="qrcode-display-box" style="background: #ffffff; padding: 10px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); display: inline-flex; justify-content: center; align-items: center;">${qrSvg}</div>
+          <a id="cf-magic-link-anchor" href="${escapeHtmlAttr(magicLink)}" target="_blank" style="font-size: 10px; color: #38bdf8; text-decoration: underline; word-break: break-all; text-align: center; max-width: 95%;">
             ${escapeHtmlAttr(magicLink)}
           </a>
+          <button type="button" class="remote-btn remote-btn-secondary" style="width: 100%; margin-top: 4px; justify-content: center; font-weight: 600;" onclick="copyMagicLinkToClipboard()" id="btn-copy-magic-link">
+            <span>📋 Copy Magic Link (کپی لینک اختصاصی)</span>
+          </button>
         </div>
 
         <div class="remote-btn-row">
           <button type="button" id="btn-cf-launch" class="remote-btn remote-btn-primary" onclick="startCloudflareTunnel()">
-            <span>${isTunnelRunning ? '🌐 Open in Browser (باز کردن مرورگر)' : '⚡ 1-Click Launch & Connect (اتصال خودکار)'}</span>
+            <span>${isTunnelRunning ? t('cfLaunchOpen') : t('cfLaunchConnect')}</span>
           </button>
           <button type="button" class="remote-btn remote-btn-secondary" onclick="sendTunnelLinkToTelegram()" title="Send Magic Link into Telegram">
             <span>📲 Send to Telegram</span>
@@ -4720,9 +4723,9 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         if (btnLaunch) {
           btnLaunch.disabled = false;
           if (msg.isRunning) {
-            btnLaunch.innerHTML = '<span>🌐 Open in Browser (باز کردن در مرورگر)</span>';
+            btnLaunch.innerHTML = '<span>' + ${JSON.stringify(t('cfLaunchOpen'))} + '</span>';
           } else {
-            btnLaunch.innerHTML = '<span>⚡ 1-Click Launch & Connect (اتصال خودکار)</span>';
+            btnLaunch.innerHTML = '<span>' + ${JSON.stringify(t('cfLaunchConnect'))} + '</span>';
           }
         }
         var btnStop = document.getElementById('btn-cf-stop');
@@ -5394,6 +5397,21 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     function sendTunnelLinkToTelegram() {
       vscode.postMessage({ command: 'sendTunnelLinkToTelegram' });
+    }
+
+    function copyMagicLinkToClipboard() {
+      var magicA = document.getElementById('cf-magic-link-anchor');
+      var url = magicA ? (magicA.href || magicA.innerText) : '';
+      if (url && navigator.clipboard) {
+        navigator.clipboard.writeText(url).then(function() {
+          var btn = document.getElementById('btn-copy-magic-link');
+          if (btn) {
+            var old = btn.innerHTML;
+            btn.innerHTML = '<span>✅ Copied Link! (کپی شد)</span>';
+            setTimeout(function() { btn.innerHTML = old; }, 2500);
+          }
+        });
+      }
     }
 
     function savePolicySettings() {

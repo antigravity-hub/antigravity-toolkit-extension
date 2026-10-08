@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { ConversationService } from './conversationService';
 import { TelegramRemoteService } from './telegramRemoteService';
+import { isRtlLanguage } from '../utils/i18n';
 
 export class MobileTunnelService {
   private static instance: MobileTunnelService;
@@ -216,13 +217,29 @@ export class MobileTunnelService {
         } catch {}
       }
 
-      // 4. Launch cloudflared quick tunnel
-      const args = ['tunnel', '--url', `http://127.0.0.1:${port}`];
+      // 4. Launch cloudflared quick tunnel with http2 protocol for maximum stability in restricted networks
+      const args = ['tunnel', '--url', `http://127.0.0.1:${port}`, '--protocol', 'http2'];
       const proc = child_process.spawn(binPath, args, {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe']
       });
       this.tunnelProcess = proc;
+
+      proc.on('exit', (code, signal) => {
+        console.warn(`[MobileTunnelService] cloudflared process exited (code=${code}, signal=${signal})`);
+        if (this.tunnelProcess === proc) {
+          this.tunnelProcess = undefined;
+          this.activeTunnelUrl = null;
+        }
+      });
+
+      proc.on('error', (err) => {
+        console.error(`[MobileTunnelService] cloudflared process error:`, err);
+        if (this.tunnelProcess === proc) {
+          this.tunnelProcess = undefined;
+          this.activeTunnelUrl = null;
+        }
+      });
 
       // 5. Capture the trycloudflare.com URL from stdout / stderr
       const tunnelUrl = await new Promise<string | null>((resolve) => {
@@ -295,6 +312,80 @@ export class MobileTunnelService {
   }
 
   /**
+   * Validates request against active cryptographic token
+   */
+  private isAuthorized(req: http.IncomingMessage, reqUrl: URL): boolean {
+    const validToken = this.telegramService.getSessionAuthToken();
+    if (!validToken) return false;
+
+    // 1. Authorization: Bearer <token>
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const candidate = authHeader.slice(7).trim();
+      if (candidate === validToken) return true;
+    }
+
+    // 2. Query param ?token=<token>
+    const queryToken = reqUrl.searchParams.get('token');
+    if (queryToken && queryToken.trim() === validToken) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Zero-Trust Access Denied Screen
+   */
+  private renderUnauthorizedHtml(): string {
+    const isRtl = isRtlLanguage();
+    const title = isRtl ? 'دسترسی غیرمجاز • Antigravity Shield' : 'Access Denied • Antigravity Shield';
+    const h1 = isRtl ? 'دسترسی مسدود شد (عدم احراز هویت)' : 'Access Blocked (Authentication Required)';
+    const desc = isRtl
+      ? 'این ارتباط تحت گارد امنیتی Zero-Trust آنتی‌گراویتی محافظت می‌شود. برای اتصال تلفن همراه خود به سیستم، لطفاً بارکد QR اختصاصی را مستقیماً از داخل پنل Antigravity در رایانه خود اسکن فرمایید.'
+      : 'This connection is protected by Antigravity\'s Zero-Trust security gate. To connect your mobile device, please scan the dedicated QR code directly from the Antigravity panel on your computer.';
+    const badge = isRtl ? 'Security Gate: Sk-Shield Auth Required' : 'Security Gate: Zero-Trust Auth Required';
+
+    return `<!DOCTYPE html>
+<html lang="${isRtl ? 'fa' : 'en'}" dir="${isRtl ? 'rtl' : 'ltr'}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>${title}</title>
+  <style>
+    body {
+      margin: 0; padding: 24px; background: #070b14; color: #f8fafc;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      min-height: 100vh; text-align: center; box-sizing: border-box;
+    }
+    .card {
+      background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(239, 68, 68, 0.3);
+      padding: 32px 24px; border-radius: 16px; max-width: 420px; width: 100%;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    .icon { font-size: 48px; margin-bottom: 16px; }
+    h1 { font-size: 19px; color: #f87171; margin-bottom: 12px; font-weight: 700; }
+    p { font-size: 13.5px; color: #94a3b8; line-height: 1.6; margin-bottom: 20px; }
+    .badge {
+      display: inline-block; background: rgba(239, 68, 68, 0.15); color: #fca5a5;
+      padding: 6px 14px; border-radius: 8px; font-size: 11.5px; font-weight: 600;
+      border: 1px solid rgba(239, 68, 68, 0.25);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">🔒</div>
+    <h1>${h1}</h1>
+    <p>${desc}</p>
+    <div class="badge">${badge}</div>
+  </div>
+</body>
+</html>`;
+  }
+
+  /**
    * Internal HTTP Request Handler serving Cyber-Glass SPA & Session APIs
    */
   private async handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -315,8 +406,21 @@ export class MobileTunnelService {
     // 1. Mobile SPA View (/mobile-view or /)
     if (pathname === '/mobile-view' || pathname === '/') {
       const token = reqUrl.searchParams.get('token') || '';
+      const isAuthed = this.isAuthorized(req, reqUrl);
+      if (!isAuthed) {
+        res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(this.renderUnauthorizedHtml());
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(this.renderMobileHtml(token));
+      return;
+    }
+
+    // Zero-Trust Auth Gate for all API routes
+    if (!this.isAuthorized(req, reqUrl)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized: Invalid or missing security token' }));
       return;
     }
 
@@ -731,6 +835,9 @@ export class MobileTunnelService {
 
     if (AUTH_TOKEN) {
       localStorage.setItem('ag_mobile_token', AUTH_TOKEN);
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
     } else {
       AUTH_TOKEN = localStorage.getItem('ag_mobile_token') || '';
     }
@@ -741,7 +848,14 @@ export class MobileTunnelService {
       if (AUTH_TOKEN) {
         options.headers['Authorization'] = 'Bearer ' + AUTH_TOKEN;
       }
-      return fetch(url, options);
+      return fetch(url, options).then(function(res) {
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem('ag_mobile_token');
+          document.body.innerHTML = '<div style="padding:48px 24px;text-align:center;color:#f87171;font-family:sans-serif;direction:rtl;"><h2>🔒 نشست امنیتی نامعتبر شد</h2><p style="color:#94a3b8;font-size:13px;margin-top:10px;">توکن اتصال تغییر کرده است. لطفاً بارکد را مجدداً از داخل پنل Antigravity در رایانه اسکن فرمایید.</p></div>';
+          throw new Error('Unauthorized');
+        }
+        return res;
+      });
     }
 
     function loadSessions() {
