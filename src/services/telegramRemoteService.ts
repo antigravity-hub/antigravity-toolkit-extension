@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as https from 'https';
 import * as crypto from 'crypto';
 import { TelegramRemoteConfig } from '../types';
+import { ShieldBridge } from '../bridge/shieldBridge';
 
 export interface TelegramTopicInfo {
   threadId: number;
@@ -116,6 +117,10 @@ export class TelegramRemoteService {
   }
 
   public getSessionAuthToken(): string {
+    const shieldApiKey = ShieldBridge.getInstance().getShieldApiKey();
+    if (shieldApiKey) {
+      return shieldApiKey;
+    }
     if (!this.config.sessionAuthToken) {
       this.config.sessionAuthToken = crypto.randomBytes(24).toString('hex');
       this.context.globalState.update(this.STORAGE_KEY, this.config);
