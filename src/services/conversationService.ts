@@ -1888,41 +1888,21 @@ export class ConversationService {
     }
 
     // 4. Ensure recovered session is registered in Antigravity's state database
-    const needsReload = this.freshlyRecoveredIds.has(session.id) || !this.trajectoryMap.has(session.id);
-    if (needsReload) {
-      this.injectTrajectorySummary(session.id, session.title, session.workspacePath || '');
-      this.freshlyRecoveredIds.add(session.id);
-      const reloadBtn = t('reloadWindow');
-      const viewBtn = t('viewInEditor');
-      const laterBtn = t('later');
-      vscode.window
-        .showInformationMessage(
-          t('singleConversationRecovered', { title: session.title }),
-          reloadBtn,
-          viewBtn,
-          laterBtn
-        )
-        .then((choice) => {
-          if (
-            choice === reloadBtn ||
-            choice?.includes('Reload') ||
-            choice?.includes('ریلود') ||
-            choice?.includes('重新加载') ||
-            choice?.includes('重新載入')
-          ) {
-            vscode.commands.executeCommand('workbench.action.reloadWindow');
-          } else if (
-            choice === viewBtn ||
-            choice?.includes('View') ||
-            choice?.includes('مشاهده') ||
-            choice?.includes('查看') ||
-            choice?.includes('檢視')
-          ) {
-            this.openTranscript(session);
-          }
-        });
-      return;
+    if (this.trajectoryMap.size === 0) {
+      this.loadTrajectorySummaries(false);
     }
+
+    if (!this.trajectoryMap.has(session.id)) {
+      this.injectTrajectorySummary(session.id, session.title, session.workspacePath || '');
+      this.trajectoryMap.set(session.id, {
+        title: session.title,
+        workspace: session.workspacePath ? path.basename(session.workspacePath) : undefined,
+        workspaceFullPath: session.workspacePath,
+        updatedAt: Date.now(),
+      });
+      vscode.window.setStatusBarMessage(`$(check) ${session.title}`, 3000);
+    }
+    this.freshlyRecoveredIds.delete(session.id);
 
     // 5. Launch automation concurrently in background (DO NOT AWAIT!)
     // vscode.commands.executeCommand on QuickPick blocks until the picker is closed,
