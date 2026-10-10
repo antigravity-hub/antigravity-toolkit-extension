@@ -147,14 +147,20 @@ export class ExtensionUpdateService {
     const currentVer = this.getCurrentVersion();
     const candidates: Array<{ version: string; path: string }> = [];
 
-    // 1. Check local Shield resources
+    // 1. Check local Shield resources across common install locations and active workspace
     const homeDir = os.homedir();
     const shieldLocations = [
-      path.join('d:', 'Ershad Zolfi', 'programming', 'coding with Gemini', 'Antigravity-Manager-Guidance', 'src-tauri', 'resources'),
       path.join(homeDir, '.antigravity_shield', 'resources'),
       path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Antigravity Shield', 'resources'),
       path.join('C:', 'Program Files', 'Antigravity Shield', 'resources'),
     ];
+
+    // Check if open workspace contains Shield src-tauri resources
+    if (vscode.workspace.workspaceFolders) {
+      for (const folder of vscode.workspace.workspaceFolders) {
+        shieldLocations.push(path.join(folder.uri.fsPath, 'src-tauri', 'resources'));
+      }
+    }
 
     for (const loc of shieldLocations) {
       const vsixFile = path.join(loc, 'antigravity-toolkit.vsix');
@@ -170,16 +176,16 @@ export class ExtensionUpdateService {
       }
     }
 
-    // 2. Check extension development folder
-    const extDevDir = path.join('d:', 'Ershad Zolfi', 'programming', 'coding with Gemini', 'antigravity-toolkit-extension');
-    if (fs.existsSync(extDevDir)) {
+    // 2. Check extension bundle directory relative to __dirname
+    const extBaseDir = path.resolve(__dirname, '..');
+    if (fs.existsSync(extBaseDir)) {
       try {
-        const files = fs.readdirSync(extDevDir);
+        const files = fs.readdirSync(extBaseDir);
         for (const file of files) {
           if (file.endsWith('.vsix') && file.startsWith('antigravity-toolkit-')) {
             const vMatch = file.match(/antigravity-toolkit-([\d.]+)\.vsix/);
             if (vMatch && vMatch[1]) {
-              candidates.push({ version: vMatch[1], path: path.join(extDevDir, file) });
+              candidates.push({ version: vMatch[1], path: path.join(extBaseDir, file) });
             }
           }
         }

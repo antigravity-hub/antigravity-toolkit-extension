@@ -187,51 +187,108 @@ export class ConversationService {
       }
     }
 
-    // 2. Discover from IDE workspaceStorage (Antigravity, Antigravity IDE, Cursor, Code)
-    const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(os.homedir(), 'AppData', 'Roaming') : '');
-    if (appData) {
-      const storageRoots = [
+    // 2. Discover from IDE workspaceStorage (Antigravity, Antigravity IDE, Cursor, Code) across Windows/macOS/Linux
+    const homeDir = os.homedir();
+    const storageRoots: string[] = [];
+
+    if (process.platform === 'win32') {
+      const appData = process.env.APPDATA || path.join(homeDir, 'AppData', 'Roaming');
+      storageRoots.push(
         path.join(appData, 'Antigravity', 'User', 'workspaceStorage'),
         path.join(appData, 'Antigravity IDE', 'User', 'workspaceStorage'),
         path.join(appData, 'Cursor', 'User', 'workspaceStorage'),
-        path.join(appData, 'Code', 'User', 'workspaceStorage'),
-      ];
+        path.join(appData, 'Code', 'User', 'workspaceStorage')
+      );
+    } else if (process.platform === 'darwin') {
+      const appSupport = path.join(homeDir, 'Library', 'Application Support');
+      storageRoots.push(
+        path.join(appSupport, 'Antigravity', 'User', 'workspaceStorage'),
+        path.join(appSupport, 'Antigravity IDE', 'User', 'workspaceStorage'),
+        path.join(appSupport, 'Cursor', 'User', 'workspaceStorage'),
+        path.join(appSupport, 'Code', 'User', 'workspaceStorage')
+      );
+    } else {
+      const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(homeDir, '.config');
+      storageRoots.push(
+        path.join(xdgConfig, 'Antigravity', 'User', 'workspaceStorage'),
+        path.join(xdgConfig, 'Antigravity IDE', 'User', 'workspaceStorage'),
+        path.join(xdgConfig, 'Cursor', 'User', 'workspaceStorage'),
+        path.join(xdgConfig, 'Code', 'User', 'workspaceStorage')
+      );
+    }
 
-      for (const root of storageRoots) {
-        if (!fs.existsSync(root)) continue;
-        try {
-          const dirs = fs.readdirSync(root, { withFileTypes: true });
-          for (const d of dirs) {
-            if (!d.isDirectory()) continue;
-            const wsJsonPath = path.join(root, d.name, 'workspace.json');
-            if (fs.existsSync(wsJsonPath)) {
-              try {
-                const data = JSON.parse(fs.readFileSync(wsJsonPath, 'utf8'));
-                const folderUrl: string = data.folder || '';
-                if (folderUrl) {
-                  const unquoted = decodeURIComponent(folderUrl);
-                  const clean = unquoted.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
-                  const norm = path.normalize(clean);
-                  const bName = path.basename(norm);
-                  if (bName && bName.length > 2 && !ignored.has(bName.toLowerCase())) {
-                    names.add(bName);
-                    if (!pathMap.has(bName.toLowerCase())) {
-                      pathMap.set(bName.toLowerCase(), norm);
-                    }
+    for (const root of storageRoots) {
+      if (!fs.existsSync(root)) continue;
+      try {
+        const dirs = fs.readdirSync(root, { withFileTypes: true });
+        for (const d of dirs) {
+          if (!d.isDirectory()) continue;
+          const wsJsonPath = path.join(root, d.name, 'workspace.json');
+          if (fs.existsSync(wsJsonPath)) {
+            try {
+              const data = JSON.parse(fs.readFileSync(wsJsonPath, 'utf8'));
+              const folderUrl: string = data.folder || '';
+              if (folderUrl) {
+                const unquoted = decodeURIComponent(folderUrl);
+                const clean = unquoted.replace(/^file:\/\/\/?/, '').replace(/^([a-zA-Z])%3A/i, '$1:');
+                const norm = path.normalize(clean);
+                const bName = path.basename(norm);
+                if (bName && bName.length > 2 && !ignored.has(bName.toLowerCase())) {
+                  names.add(bName);
+                  if (!pathMap.has(bName.toLowerCase())) {
+                    pathMap.set(bName.toLowerCase(), norm);
                   }
                 }
-              } catch {
-                // ignore
               }
+            } catch {
+              // ignore
             }
           }
-        } catch {
-          // ignore
         }
+      } catch {
+        // ignore
       }
     }
 
-    // 3. Fallback well-known core projects
+    // 3. Dynamically discover sibling projects by inspecting parent workspace folders
+    // Gathers workspace parent directories from active and historical IDE storage,
+    // dynamically discovering all sibling project repos on any machine without hardcoded paths.
+    const parentDirs = new Set<string>();
+    for (const wsPath of pathMap.values()) {
+      try {
+        const parent = path.dirname(wsPath);
+        if (parent && fs.existsSync(parent)) {
+          const parentBase = path.basename(parent).toLowerCase();
+          if (!ignored.has(parentBase)) {
+            parentDirs.add(parent);
+            const grandParent = path.dirname(parent);
+            if (grandParent && fs.existsSync(grandParent)) {
+              const gpBase = path.basename(grandParent).toLowerCase();
+              if (gpBase.length > 2 && !ignored.has(gpBase)) {
+                parentDirs.add(grandParent);
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    for (const pDir of parentDirs) {
+      try {
+        const dirs = fs.readdirSync(pDir, { withFileTypes: true });
+        for (const d of dirs) {
+          if (!d.isDirectory()) continue;
+          const bName = d.name;
+          if (bName.startsWith('.') || ignored.has(bName.toLowerCase())) continue;
+          names.add(bName);
+          if (!pathMap.has(bName.toLowerCase())) {
+            pathMap.set(bName.toLowerCase(), path.join(pDir, bName));
+          }
+        }
+      } catch {}
+    }
+
+    // 4. Well-known core projects catalogue
     const fallbackProjects = [
       'Antigravity-Manager-Guidance',
       'antigravity-toolkit-extension',
@@ -258,13 +315,6 @@ export class ConversationService {
     ];
     for (const p of fallbackProjects) {
       names.add(p);
-      if (!pathMap.has(p.toLowerCase())) {
-        const parentBase = 'd:\\Ershad Zolfi\\programming\\coding with Gemini';
-        const cand = path.join(parentBase, p);
-        if (fs.existsSync(cand)) {
-          pathMap.set(p.toLowerCase(), cand);
-        }
-      }
     }
 
     const sortedNames = Array.from(names).sort((a, b) => b.length - a.length);
@@ -1201,6 +1251,38 @@ export class ConversationService {
         }
       }
 
+      // Dynamic fallback for any session without workspace or classified as General
+      if ((!workspacePath || projectName === 'General') && transcriptPath && fs.existsSync(transcriptPath)) {
+        try {
+          const tFd = fs.openSync(transcriptPath, 'r');
+          const tBuf = Buffer.alloc(16384);
+          const tRead = fs.readSync(tFd, tBuf, 0, 16384, 0);
+          fs.closeSync(tFd);
+          const tText = tBuf.toString('utf8', 0, tRead).toLowerCase().replace(/\\\\/g, '/').replace(/\\/g, '/');
+
+          for (const [, candPath] of pathMap.entries()) {
+            const candNorm = candPath.toLowerCase().replace(/\\\\/g, '/').replace(/\\/g, '/');
+            if (tText.includes(candNorm)) {
+              workspacePath = candPath;
+              projectName = path.basename(candPath);
+              break;
+            }
+          }
+
+          if (!workspacePath) {
+            for (const name of knownWorkspaces) {
+              if (tText.includes(`/${name.toLowerCase()}/`) || tText.includes(`/${name.toLowerCase()}"`)) {
+                if (pathMap.has(name.toLowerCase())) {
+                  workspacePath = pathMap.get(name.toLowerCase());
+                }
+                projectName = name;
+                break;
+              }
+            }
+          }
+        } catch {}
+      }
+
       const date = new Date(mtime || Date.now());
       const dateFormatted = date.toLocaleDateString(undefined, {
         month: 'short',
@@ -1667,6 +1749,7 @@ export class ConversationService {
         const vbsContent = [
           'Set WshShell = CreateObject("WScript.Shell")',
           'On Error Resume Next',
+          'WshShell.AppActivate "Antigravity IDE"',
           'WshShell.AppActivate "Antigravity"',
           'WScript.Sleep 650',
           'WshShell.SendKeys "^a"',
