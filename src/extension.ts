@@ -114,7 +114,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('antigravityToolkit.recoverInterruptedSessions', async () => {
-      const count = await conversationService.autoRecoverInterruptedSessions(false);
+      const count = await conversationService.autoRecoverInterruptedSessions(false, true);
       if (count === 0) {
         vscode.window.showInformationMessage(t('noInterruptedFound'));
       }

@@ -21,6 +21,7 @@ export class ConversationService {
   private watchDebounceTimer: NodeJS.Timeout | undefined;
   private isSelfWritingDb = false;
   private freshlyRecoveredIds: Set<string> = new Set();
+  private vaultGuardianTimer: NodeJS.Timeout | undefined;
 
   private constructor() {}
 
@@ -101,6 +102,9 @@ export class ConversationService {
         }
       }
     }
+
+    // Start Vault Auto-Healer Guardian to protect against multi-window state overwrites
+    this.startVaultGuardian();
   }
 
   private scheduleWatchRefresh(): void {
@@ -112,11 +116,13 @@ export class ConversationService {
       if (this.isSelfWritingDb) return;
       this.lastSessionsScan = 0;
       this.lastTrajectoryLoad = 0;
+      this.autoHealFromVault();
       this.refresh();
     }, 2000);
   }
 
   public disposeWatchers(): void {
+    this.stopVaultGuardian();
     for (const w of this.brainWatchers) {
       try {
         w.close();
@@ -449,6 +455,143 @@ export class ConversationService {
   }
 
   /**
+   * Resolves the persistent single-source-of-truth vault path.
+   */
+  private getVaultFilePath(): string {
+    const homeDir = os.homedir();
+    return path.join(homeDir, '.gemini', 'antigravity-trajectory-vault.json');
+  }
+
+  /**
+   * Loads all historical conversations from the tamper-proof vault.
+   */
+  public loadFromVault(): Map<string, { sessionId: string; title: string; workspacePath?: string; createdAt: number }> {
+    const vPath = this.getVaultFilePath();
+    const map = new Map<string, { sessionId: string; title: string; workspacePath?: string; createdAt: number }>();
+    if (!fs.existsSync(vPath)) return map;
+    try {
+      const raw = fs.readFileSync(vPath, 'utf8');
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        for (const item of arr) {
+          if (item && item.sessionId && item.title) {
+            map.set(item.sessionId, item);
+          }
+        }
+      }
+    } catch {}
+    return map;
+  }
+
+  /**
+   * Persists healthy trajectory entries to the tamper-proof vault file.
+   */
+  public saveToVault(items: { sessionId: string; title: string; workspacePath?: string; createdAt?: number }[]): void {
+    if (!items || items.length === 0) return;
+    try {
+      const vPath = this.getVaultFilePath();
+      const dir = path.dirname(vPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+      const currentMap = this.loadFromVault();
+      for (const it of items) {
+        if (it && it.sessionId && it.title && !this.isPlaceholderTitle(it.title)) {
+          currentMap.set(it.sessionId, {
+            sessionId: it.sessionId,
+            title: it.title,
+            workspacePath: it.workspacePath,
+            createdAt: it.createdAt || Date.now(),
+          });
+        }
+      }
+
+      const arr = Array.from(currentMap.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      const tmp = vPath + '.tmp.' + Date.now();
+      fs.writeFileSync(tmp, JSON.stringify(arr, null, 2), 'utf8');
+      fs.renameSync(tmp, vPath);
+    } catch (e) {
+      console.warn('[ConversationService] Failed to save to vault:', e);
+    }
+  }
+
+  /**
+   * Checks if multiple Antigravity IDE windows/processes are active simultaneously.
+   */
+  public isMultipleWindowsRunning(): boolean {
+    if (process.platform !== 'win32') return false;
+    try {
+      const res = child_process.spawnSync('tasklist', ['/FI', 'IMAGENAME eq Antigravity IDE.exe', '/FO', 'CSV'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 2000,
+      });
+      const stdout = res.stdout || '';
+      const lines = stdout.trim().split('\n').filter((l) => l.includes('Antigravity IDE.exe'));
+      return lines.length > 7;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Guardian that continuously checks if state.vscdb was regressed/wiped by another window,
+   * and automatically restores all historical conversations from the vault.
+   */
+  public autoHealFromVault(): number {
+    if (this.isSelfWritingDb) return 0;
+    const vault = this.loadFromVault();
+    if (vault.size < 10) return 0;
+
+    try {
+      const targetDbPaths = this.getStateDbPaths();
+      if (targetDbPaths.length === 0) return 0;
+      const primaryDb = targetDbPaths[0];
+
+      const qRes = child_process.spawnSync('sqlite3', [primaryDb], {
+        input: "SELECT value FROM ItemTable WHERE key = 'antigravityUnifiedStateSync.trajectorySummaries';\n",
+        encoding: 'utf8',
+        windowsHide: true,
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: 3000,
+      });
+      const val = (qRes.stdout || '').trim();
+      if (!val) {
+        console.log(`[ConversationService] DB empty while vault has ${vault.size}. Auto-healing!`);
+        return this.batchInjectTrajectorySummaries(Array.from(vault.values()));
+      }
+
+      const buf = Buffer.from(val, 'base64');
+      const top = this.parseProto(buf);
+      let entryCount = 0;
+      for (const f of top) {
+        if (f.fieldNum === 1 && f.type === 'bytes') entryCount++;
+      }
+
+      if (entryCount < vault.size * 0.7 && vault.size >= 50) {
+        console.log(`[ConversationService] Auto-healer detected DB regression (${entryCount} < ${vault.size}). Restoring from vault!`);
+        return this.batchInjectTrajectorySummaries(Array.from(vault.values()));
+      }
+    } catch (err) {
+      console.warn('[ConversationService] autoHealFromVault check failed:', err);
+    }
+    return 0;
+  }
+
+  private startVaultGuardian(): void {
+    this.stopVaultGuardian();
+    this.vaultGuardianTimer = setInterval(() => {
+      this.autoHealFromVault();
+    }, 25000);
+  }
+
+  private stopVaultGuardian(): void {
+    if (this.vaultGuardianTimer) {
+      clearInterval(this.vaultGuardianTimer);
+      this.vaultGuardianTimer = undefined;
+    }
+  }
+
+  /**
    * Checks if candidate text belongs to an automated agent/subagent instruction.
    * NOTE: Persian text ([\u0600-\u06FF]) is ALWAYS treated as human input and NEVER as an automated subagent.
    */
@@ -638,6 +781,9 @@ export class ConversationService {
         });
       }
 
+      // Persist all successfully staged items to the persistent vault
+      this.saveToVault(sessionsToInject);
+
       return newlyInjected;
     } catch (err) {
       console.warn('[ConversationService] Failed to batch inject trajectory summaries:', err);
@@ -766,18 +912,34 @@ export class ConversationService {
    * brain directories and legacy DBs, batch-injects them into state.vscdb, and notifies
    * the user once to reload window if any sessions were restored.
    */
-  public async autoRecoverInterruptedSessions(silent = false): Promise<number> {
+  public async autoRecoverInterruptedSessions(silent = false, forceFullSync = false): Promise<number> {
     // 1. Force reload authoritative trajectories from all databases
     this.loadTrajectorySummaries(true);
 
     const brainDirs = this.getBrainDirectories();
     const { pathMap } = this.getKnownWorkspaces();
-    const stagedToRecover: {
-      sessionId: string;
-      title: string;
-      workspacePath?: string;
-      createdAt?: number;
-    }[] = [];
+    const stagedMap = new Map<
+      string,
+      {
+        sessionId: string;
+        title: string;
+        workspacePath?: string;
+        createdAt?: number;
+      }
+    >();
+
+    // If forcing a full sync, seed from the persistent tamper-proof Vault first
+    if (forceFullSync) {
+      const vaultData = this.loadFromVault();
+      for (const [id, item] of vaultData.entries()) {
+        stagedMap.set(id, {
+          sessionId: item.sessionId,
+          title: item.title,
+          workspacePath: item.workspacePath,
+          createdAt: item.createdAt,
+        });
+      }
+    }
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -789,8 +951,8 @@ export class ConversationService {
           if (!entry.isDirectory()) continue;
           const convId = entry.name;
           if (!uuidRegex.test(convId)) continue;
-          // If already in trajectoryMap, it's already indexed
-          if (this.trajectoryMap.has(convId)) continue;
+          // In standard auto-scan mode, skip already indexed sessions. In forceFullSync, process all disk sessions.
+          if (!forceFullSync && this.trajectoryMap.has(convId)) continue;
 
           const compact = path.join(bDir, convId, '.system_generated', 'logs', 'transcript.jsonl');
           const full = path.join(bDir, convId, '.system_generated', 'logs', 'transcript_full.jsonl');
@@ -893,7 +1055,7 @@ export class ConversationService {
               }
             }
 
-            stagedToRecover.push({
+            stagedMap.set(convId, {
               sessionId: convId,
               title: finalTitle,
               workspacePath,
@@ -904,6 +1066,7 @@ export class ConversationService {
       } catch {}
     }
 
+    const stagedToRecover = Array.from(stagedMap.values());
     if (stagedToRecover.length === 0) {
       return 0;
     }
@@ -919,9 +1082,18 @@ export class ConversationService {
       if (!silent) {
         const reloadBtn = t('reloadWindow');
         const laterBtn = t('later');
+        const isMulti = this.isMultipleWindowsRunning();
+        let toastMsg = forceFullSync
+          ? t('fullSyncSuccessToast', { count: recoveredCount })
+          : t('recoveredConversationsToast', { count: recoveredCount });
+
+        if (isMulti) {
+          toastMsg += ' ' + t('multiWindowWarning');
+        }
+
         vscode.window
           .showInformationMessage(
-            t('recoveredConversationsToast', { count: recoveredCount }),
+            toastMsg,
             reloadBtn,
             laterBtn
           )

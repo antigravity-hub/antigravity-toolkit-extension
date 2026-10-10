@@ -272,7 +272,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           }
           break;
         case 'autoRecoverChats':
-          await this.conversationService.autoRecoverInterruptedSessions(false);
+          await this.conversationService.autoRecoverInterruptedSessions(false, true);
           this.updateWebview();
           break;
         case 'getConversationPreview':

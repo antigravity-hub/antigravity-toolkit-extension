@@ -78,6 +78,10 @@ const MESSAGES: Record<SupportedLanguage, Record<string, string>> = {
   en: {
     recoveredConversationsToast:
       '✅ [Antigravity Toolkit] Recovered {count} conversation(s) (interrupted by updates or migrations). To fully activate them in chat history, please reload the window.',
+    fullSyncSuccessToast:
+      '✅ [Antigravity Toolkit] Full recovery complete: {count} healthy conversation(s) synchronized & secured in vault. Please reload window to activate.',
+    multiWindowWarning:
+      'Multiple IDE windows detected. Please reload this window to apply history, and close other windows to prevent state overwrite.',
     singleConversationRecovered:
       'Conversation "{title}" was successfully recovered and added to history. Antigravity requires a window reload to fully activate it in the chat panel.',
     noInterruptedFound:
@@ -111,6 +115,10 @@ const MESSAGES: Record<SupportedLanguage, Record<string, string>> = {
   fa: {
     recoveredConversationsToast:
       '✅ [Antigravity Toolkit] تعداد {count} مکالمه بازیابی شد (قطع‌شده در آپدیت یا جابجایی). برای فعال‌سازی کامل در هیستوری چت، لطفاً پنجره را ریلود کنید.',
+    fullSyncSuccessToast:
+      '✅ [Antigravity Toolkit] ریکاوری جامع انجام شد: {count} مکالمه با موفقیت همگام‌سازی و در خزانه ایمن‌سازی شدند. لطفاً پنجره را ریلود کنید.',
+    multiWindowWarning:
+      'چندین پنجره IDE باز است. برای فعال‌سازی کامل، این پنجره را ریلود کنید و جهت پیشگیری از تداخل، سایر پنجره‌ها را ببندید.',
     singleConversationRecovered:
       'مکالمه «{title}» با موفقیت بازیابی و به تاریخچه اضافه شد. انتی‌گراویتی برای فعال‌سازی کامل آن در پنل چت نیاز به یک بار ریلود پنجره دارد.',
     noInterruptedFound:
