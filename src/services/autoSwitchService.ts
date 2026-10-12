@@ -171,21 +171,21 @@ export class AutoSwitchService {
 
       const activeHealth = this.accountService.getAccountHealth(activeAccount);
 
-      // Adaptive Low-Quota Proactive Probe:
-      // When active session quota enters the critical danger zone (<= 20% and > 0%),
-      // trigger a fast quota check on Shield every 30 seconds so 0% exhaustion is caught live!
-      if (activeHealth > 0 && activeHealth <= 20) {
-        if (now - this.lastProactiveProbeTimestamp >= 30000) {
-          this.lastProactiveProbeTimestamp = now;
-          console.log(
-            `[AutoSwitch] Active session ${activeAccount.email} is in low-quota zone (${activeHealth}%). Requesting live sync from Shield...`
-          );
-          import('../bridge/shieldBridge').then(({ ShieldBridge }) => {
-            ShieldBridge.getInstance()
-              .refreshAccountQuota(activeAccount.id || activeAccount.email)
-              .catch(() => {});
-          });
-        }
+      // Proactive Quota Probe:
+      // Keep quota sync alive from Shield during active IDE usage.
+      // - If active session is in low-quota danger zone (<= 25% and > 0%), probe every 25 seconds.
+      // - If quota is healthy (> 25%), probe every 90 seconds so gradual depletion during continuous coding is captured live!
+      const probeIntervalMs = activeHealth > 0 && activeHealth <= 25 ? 25000 : 90000;
+      if (now - this.lastProactiveProbeTimestamp >= probeIntervalMs) {
+        this.lastProactiveProbeTimestamp = now;
+        console.log(
+          `[AutoSwitch] Proactive quota probe for ${activeAccount.email} (Health: ${activeHealth}%). Requesting live sync from Shield...`
+        );
+        import('../bridge/shieldBridge').then(({ ShieldBridge }) => {
+          ShieldBridge.getInstance()
+            .refreshAccountQuota(activeAccount.id || activeAccount.email)
+            .catch(() => {});
+        });
       }
 
       if (!isCritical) {
@@ -215,6 +215,14 @@ export class AutoSwitchService {
               }
             }
           }
+        }
+      }
+
+      if (!isCritical) {
+        const transcriptQuotaError = this.checkRecentTranscriptForQuotaError();
+        if (transcriptQuotaError) {
+          isCritical = true;
+          criticalReason = transcriptQuotaError;
         }
       }
 
@@ -274,6 +282,89 @@ export class AutoSwitchService {
     } finally {
       this.isChecking = false;
     }
+  }
+
+  /**
+   * Emergency fast-failover hook for intercepting direct Google Cloud quota exhaustion errors
+   * (e.g. "Individual quota reached. Resets in 2h7m30s").
+   */
+  public async handleDirectQuotaDepletion(errorText: string): Promise<boolean> {
+    if (!this.enabled) return false;
+    const now = Date.now();
+    if (now - this.lastSwitchTimestamp < 10000) return false;
+
+    await this.accountService.reloadFromDiskSilently();
+    const activeAccount = this.accountService.getActiveAccount();
+    if (!activeAccount) return false;
+
+    console.warn(`[AutoSwitch] 🚨 Direct Quota Depletion Intercepted: "${errorText}". Initiating instant emergency failover!`);
+
+    let resetNotice = 'Individual quota reached on Google Cloud';
+    const resetMatch = errorText.match(/resets? in\s+([^\.,;\]\n>]+)/i);
+    if (resetMatch && resetMatch[1]) {
+      resetNotice += ` (Resets in ${resetMatch[1].trim()})`;
+    }
+
+    const bestCandidate = this.accountService.getBestNextAccount(activeAccount.email);
+    if (!bestCandidate) {
+      console.error('[AutoSwitch] Emergency failover desired, but no eligible standby account found.');
+      return false;
+    }
+
+    this.lastSwitchTimestamp = now;
+    this.lastSwitchReason = resetNotice;
+
+    const success = await this.accountService.switchAccount(bestCandidate.account.email, true);
+    if (success) {
+      this.emitStatus();
+      vscode.window.showWarningMessage(
+        `⚡ Antigravity Auto-Rotate: Switched from ${activeAccount.email} to ${bestCandidate.account.email} (${resetNotice})`
+      );
+    }
+    return success;
+  }
+
+  private checkRecentTranscriptForQuotaError(): string | null {
+    try {
+      const home = os.homedir();
+      const brainDir = path.join(home, '.gemini', 'antigravity-ide', 'brain');
+      if (!fs.existsSync(brainDir)) return null;
+
+      const entries = fs.readdirSync(brainDir, { withFileTypes: true });
+      let newestDir = '';
+      let newestMtime = 0;
+      for (const ent of entries) {
+        if (ent.isDirectory()) {
+          const full = path.join(brainDir, ent.name);
+          const stat = fs.statSync(full);
+          if (stat.mtimeMs > newestMtime) {
+            newestMtime = stat.mtimeMs;
+            newestDir = full;
+          }
+        }
+      }
+
+      if (!newestDir) return null;
+      const transcriptPath = path.join(newestDir, '.system_generated', 'logs', 'transcript.jsonl');
+      if (!fs.existsSync(transcriptPath)) return null;
+
+      const stat = fs.statSync(transcriptPath);
+      // Only check if modified in the last 60 seconds
+      if (Date.now() - stat.mtimeMs > 60000) return null;
+
+      const fd = fs.openSync(transcriptPath, 'r');
+      const tailSize = Math.min(stat.size, 8192);
+      const tailBuf = Buffer.alloc(tailSize);
+      fs.readSync(fd, tailBuf, 0, tailSize, stat.size - tailSize);
+      fs.closeSync(fd);
+
+      const tailStr = tailBuf.toString('utf8');
+      if (/individual quota reached/i.test(tailStr)) {
+        const match = tailStr.match(/Individual quota reached[^\n"]*/i);
+        return match ? match[0] : 'Individual quota reached';
+      }
+    } catch {}
+    return null;
   }
 
   public dispose(): void {
