@@ -18,6 +18,7 @@ import { ExtensionUpdateService } from './services/extensionUpdateService';
 import { TelegramRemoteService } from './services/telegramRemoteService';
 import { AutoApprovePolicyService } from './services/autoApprovePolicyService';
 import { MobileTunnelService } from './services/mobileTunnelService';
+import { IdeOptimizerService } from './services/ideOptimizerService';
 import { t } from './utils/i18n';
 
 let quotaIntervalTimer: NodeJS.Timeout | undefined;
@@ -38,6 +39,7 @@ export function activate(context: vscode.ExtensionContext) {
   const telegramService = TelegramRemoteService.initialize(context);
   const autoApproveService = AutoApprovePolicyService.initialize(context);
   const mobileTunnelService = MobileTunnelService.initialize(context, conversationService, telegramService);
+  const ideOptimizer = IdeOptimizerService.initialize(context);
 
   context.subscriptions.push(networkWatchdog);
   context.subscriptions.push(shieldWatcher);

@@ -112,6 +112,12 @@
         "title": "Recover Interrupted/Crashed Conversations",
         "category": "Antigravity Toolkit",
         "icon": "$(history)"
+      },
+      {
+        "command": "antigravityToolkit.optimizeIdePerformance",
+        "title": "Optimize IDE Memory & File Watchers",
+        "category": "Antigravity Toolkit",
+        "icon": "$(dashboard)"
       }
     ],
     "menus": {
