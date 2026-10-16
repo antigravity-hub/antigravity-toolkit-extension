@@ -71,11 +71,20 @@ export class ShieldWatcherService implements vscode.Disposable {
       console.warn('[ShieldWatcher] Could not watch gui_config.json:', e);
     }
 
-    // Watch parent dir to catch creation of bridge_info.json, accounts.json, or gui_config.json
+    // Watch parent dir to catch creation of bridge_info.json, accounts.json, gui_config.json, or skills_event.json
     try {
       const wDir = fs.watch(shieldDir, (_event, filename) => {
-        if (filename === 'bridge_info.json' || filename === 'accounts.json' || filename === 'gui_config.json') {
-          this.onFileChanged();
+        if (
+          filename === 'bridge_info.json' ||
+          filename === 'accounts.json' ||
+          filename === 'gui_config.json' ||
+          filename === 'skills_event.json'
+        ) {
+          if (filename === 'skills_event.json') {
+            this.onSkillsEventChanged();
+          } else {
+            this.onFileChanged();
+          }
         }
       });
       this.watchers.push(wDir);
@@ -130,6 +139,36 @@ export class ShieldWatcherService implements vscode.Disposable {
         console.error('[ShieldWatcher] Error handling disk change:', err);
       }
     }, 250);
+  }
+
+  private onSkillsEventChanged(): void {
+    if (this.isDisposed) return;
+
+    // Zero-lag event-driven skill catalog synchronization
+    setTimeout(async () => {
+      try {
+        const home = os.homedir();
+        const eventFile = path.join(home, '.antigravity_shield', 'skills_event.json');
+        if (fs.existsSync(eventFile)) {
+          const raw = fs.readFileSync(eventFile, 'utf8');
+          const data = JSON.parse(raw);
+          console.log(`[ShieldWatcher] Skill event received: ${data.skill} (${data.action}). Hot-refreshing...`);
+
+          // 1. Trigger soft restart of Language Server in memory (0ms context loss)
+          const { LanguageServerClient } = await import('../bridge/languageServerClient');
+          const lsClient = LanguageServerClient.getInstance();
+          await lsClient.callRestart().catch(() => {});
+
+          // 2. Display subtle status bar message without modal interrupt
+          vscode.window.setStatusBarMessage(
+            `$(check) Antigravity Skill '${data.skill}' ${data.action} & ready!`,
+            4000
+          );
+        }
+      } catch (err) {
+        console.warn('[ShieldWatcher] Error syncing skill event:', err);
+      }
+    }, 100);
   }
 
   public dispose(): void {
