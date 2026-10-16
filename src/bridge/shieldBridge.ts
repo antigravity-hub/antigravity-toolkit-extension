@@ -16,9 +16,9 @@ export class ShieldBridge {
     return ShieldBridge.instance;
   }
 
-  private pingUrl(url: URL, timeoutMs = 400): Promise<boolean> {
+  private pingUrl(url: URL, timeoutMs = 500): Promise<boolean> {
     return new Promise((resolve) => {
-      const req = http.get(url, { timeout: timeoutMs }, (res) => {
+      const req = http.get(url, { timeout: timeoutMs, agent: false }, (res) => {
         resolve(res.statusCode === 200);
       });
       req.on('error', () => resolve(false));
@@ -139,31 +139,34 @@ export class ShieldBridge {
     try {
       const baseUrl = await this.getBaseUrl();
       const url = new URL('/api/health', baseUrl);
-      const isOnline = await this.pingUrl(url, 300);
-      if (isOnline) return true;
+      const isOnline = await this.pingUrl(url, 400);
+      if (isOnline) {
+        this.detectedBaseUrl = baseUrl;
+        return true;
+      }
     } catch {
       // ignore
     }
 
     // Check candidate ports in parallel for fast discovery
-    const ports = [8046, 8766, 8045, 8765];
+    const ports = [8045, 8766, 8046, 8765, 8047];
     const checks = ports.map(async (port) => {
       try {
-        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/health`), 250);
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/health`), 350);
         if (isOnline) {
           this.detectedBaseUrl = `http://127.0.0.1:${port}`;
           return true;
         }
       } catch {}
       try {
-        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/toolkit/status`), 250);
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/toolkit/status`), 350);
         if (isOnline) {
           this.detectedBaseUrl = `http://127.0.0.1:${port}`;
           return true;
         }
       } catch {}
       try {
-        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/toolkit/status`), 250);
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/toolkit/status`), 350);
         if (isOnline) {
           this.detectedBaseUrl = `http://127.0.0.1:${port}`;
           return true;
@@ -175,7 +178,6 @@ export class ShieldBridge {
     const results = await Promise.all(checks);
     if (results.some(Boolean)) return true;
 
-    this.detectedBaseUrl = null;
     return false;
   }
 
@@ -657,7 +659,7 @@ export class ShieldBridge {
   public async sendHeartbeat(activeEmail?: string): Promise<boolean> {
     const payload = JSON.stringify({
       ide: 'Antigravity IDE',
-      version: '2.0.0',
+      version: '2.7.3',
       active_email: activeEmail || null,
     });
 
@@ -729,7 +731,10 @@ export class ShieldBridge {
           req.write(payload);
           req.end();
         });
-        if (ok) return true;
+        if (ok) {
+          this.detectedBaseUrl = `http://127.0.0.1:${target.port}`;
+          return true;
+        }
       } catch {
         // try next target
       }

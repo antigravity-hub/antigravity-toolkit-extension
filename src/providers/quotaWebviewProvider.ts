@@ -397,7 +397,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         ]).catch(() => this.conversationService.getCachedSessions()),
         Promise.race([
           ShieldBridge.getInstance().isShieldOnline(),
-          new Promise<boolean>((res) => setTimeout(() => res(ShieldBridge.getInstance().isLastKnownOnline()), 400))
+          new Promise<boolean>((res) => setTimeout(() => res(ShieldBridge.getInstance().isLastKnownOnline()), 1200))
         ]).catch(() => false),
         Promise.race([
           ShieldBridge.getInstance().getTokenStats(),
