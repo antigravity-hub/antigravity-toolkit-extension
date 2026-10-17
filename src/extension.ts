@@ -107,10 +107,12 @@ export function activate(context: vscode.ExtensionContext) {
   // 4. Register Commands
   context.subscriptions.push(
     vscode.commands.registerCommand('antigravityToolkit.refreshAll', async () => {
+      await accountService.reloadFromDiskSilently();
       quotaService.notifyQuotasUpdated();
       conversationService.refresh();
       await conversationService.autoRecoverInterruptedSessions(false);
-      await updateService.checkAndUpdate(true);
+      await updateService.checkAndUpdate(false);
+      vscode.window.showInformationMessage('⚡ Antigravity Toolkit: Quotas & sessions refreshed.');
     })
   );
 
