@@ -4113,8 +4113,41 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
   <script>
     const vscode = acquireVsCodeApi();
 
+    let remoteClickTimestamps = [];
+
+    function isRemoteUnlocked() {
+      try {
+        return localStorage.getItem('antigravity_remote_unlocked') === 'true';
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function checkRemoteUnlock() {
+      const now = Date.now();
+      remoteClickTimestamps.push(now);
+      remoteClickTimestamps = remoteClickTimestamps.filter(t => now - t <= 10000);
+      if (remoteClickTimestamps.length >= 7) {
+        try {
+          localStorage.setItem('antigravity_remote_unlocked', 'true');
+        } catch (e) {}
+        remoteClickTimestamps = [];
+        return true;
+      }
+      return false;
+    }
+
     function switchTab(tabId) {
       if (!tabId) return;
+
+      if (tabId === 'remote') {
+        if (!isRemoteUnlocked()) {
+          const justUnlocked = checkRemoteUnlock();
+          if (!justUnlocked) {
+            return;
+          }
+        }
+      }
       document.querySelectorAll('.tab-btn').forEach(btn => {
         const d = btn.getAttribute('data-tab');
         const o = btn.getAttribute('onclick') || '';
