@@ -31,23 +31,31 @@ export class ExtensionUpdateService {
    * Compares two semver strings: returns true if candidate is strictly newer than current
    */
   public isVersionNewer(candidate: string, current: string): boolean {
-    const parse = (v: string) =>
-      v
-        .trim()
-        .replace(/^v/i, '')
-        .split('.')
-        .map((n) => parseInt(n, 10) || 0);
+    const parse = (v: string) => {
+      const clean = v.trim().replace(/^v/i, '');
+      const [base, pre] = clean.split('-');
+      const parts = base.split('.').map((n) => parseInt(n, 10) || 0);
+      return { parts, pre };
+    };
 
-    const candParts = parse(candidate);
-    const curParts = parse(current);
-    const maxLen = Math.max(candParts.length, curParts.length);
+    const cand = parse(candidate);
+    const cur = parse(current);
+    const maxLen = Math.max(cand.parts.length, cur.parts.length);
 
     for (let i = 0; i < maxLen; i++) {
-      const c = candParts[i] || 0;
-      const cur = curParts[i] || 0;
-      if (c > cur) return true;
-      if (c < cur) return false;
+      const c = cand.parts[i] || 0;
+      const cu = cur.parts[i] || 0;
+      if (c > cu) return true;
+      if (c < cu) return false;
     }
+
+    // Base versions are identical (e.g. 2.7.4 vs 2.7.4-pre.1)
+    if (!cand.pre && cur.pre) return true;
+    if (cand.pre && !cur.pre) return false;
+    if (cand.pre && cur.pre) {
+      return cand.pre.localeCompare(cur.pre, undefined, { numeric: true }) > 0;
+    }
+
     return false;
   }
 
@@ -183,7 +191,7 @@ export class ExtensionUpdateService {
         const files = fs.readdirSync(extBaseDir);
         for (const file of files) {
           if (file.endsWith('.vsix') && file.startsWith('antigravity-toolkit-')) {
-            const vMatch = file.match(/antigravity-toolkit-([\d.]+)\.vsix/);
+            const vMatch = file.match(/antigravity-toolkit-([\d.]+(?:-[a-zA-Z0-9.]+)?)\.vsix/);
             if (vMatch && vMatch[1]) {
               candidates.push({ version: vMatch[1], path: path.join(extBaseDir, file) });
             }
