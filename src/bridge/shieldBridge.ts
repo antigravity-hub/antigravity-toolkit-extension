@@ -8,6 +8,8 @@ import { Account, ModelQuota, TokenUsageStats } from '../types';
 export class ShieldBridge {
   private static instance: ShieldBridge;
   private detectedBaseUrl: string | null = null;
+  private failedPingCount = 0;
+  private httpAgent = new http.Agent({ keepAlive: true, maxSockets: 10, keepAliveMsecs: 30000 });
 
   public static getInstance(): ShieldBridge {
     if (!ShieldBridge.instance) {
@@ -16,9 +18,9 @@ export class ShieldBridge {
     return ShieldBridge.instance;
   }
 
-  private pingUrl(url: URL, timeoutMs = 500): Promise<boolean> {
+  private pingUrl(url: URL, timeoutMs = 800): Promise<boolean> {
     return new Promise((resolve) => {
-      const req = http.get(url, { timeout: timeoutMs, agent: false }, (res) => {
+      const req = http.get(url, { timeout: timeoutMs, agent: this.httpAgent }, (res) => {
         resolve(res.statusCode === 200);
       });
       req.on('error', () => resolve(false));
@@ -31,6 +33,7 @@ export class ShieldBridge {
 
   public resetDetectedBaseUrl(): void {
     this.detectedBaseUrl = null;
+    this.failedPingCount = 0;
   }
 
   public static safeQuotaPercentage(fraction?: number | null): number {
@@ -64,9 +67,18 @@ export class ShieldBridge {
 
   public async getBaseUrl(): Promise<string> {
     if (this.detectedBaseUrl) {
-      const alive = await this.pingUrl(new URL('/api/health', this.detectedBaseUrl), 300);
-      if (alive) return this.detectedBaseUrl;
+      const alive = await this.pingUrl(new URL('/api/health', this.detectedBaseUrl), 800);
+      if (alive) {
+        this.failedPingCount = 0;
+        return this.detectedBaseUrl;
+      }
+      this.failedPingCount++;
+      // Retain detectedBaseUrl across transient single ping spikes
+      if (this.failedPingCount < 3) {
+        return this.detectedBaseUrl;
+      }
       this.detectedBaseUrl = null;
+      this.failedPingCount = 0;
     }
     const config = vscode.workspace.getConfiguration('antigravityToolkit');
     const configured = config.get<string>('shieldApiUrl');
@@ -83,17 +95,19 @@ export class ShieldBridge {
         const info = JSON.parse(raw);
         if (info && info.port) {
           const candidate = `http://127.0.0.1:${info.port}`;
-          const ok = await this.pingUrl(new URL('/api/health', candidate), 300);
+          const ok = await this.pingUrl(new URL('/api/health', candidate), 800);
           if (ok) {
             this.detectedBaseUrl = candidate;
+            this.failedPingCount = 0;
             return candidate;
           }
         }
         if (info && info.companion_port) {
           const candidate = `http://127.0.0.1:${info.companion_port}`;
-          const ok = await this.pingUrl(new URL('/api/health', candidate), 300);
+          const ok = await this.pingUrl(new URL('/api/health', candidate), 800);
           if (ok) {
             this.detectedBaseUrl = candidate;
+            this.failedPingCount = 0;
             return candidate;
           }
         }
@@ -104,16 +118,16 @@ export class ShieldBridge {
 
     // 2. Auto-detect between candidate ports in parallel
     const candidates = [
-      'http://127.0.0.1:8765',
-      'http://127.0.0.1:8046',
-      'http://127.0.0.1:8766',
       'http://127.0.0.1:8045',
+      'http://127.0.0.1:8765',
+      'http://127.0.0.1:8766',
+      'http://127.0.0.1:8046',
       'http://127.0.0.1:8047',
     ];
     try {
       const checks = candidates.map(async (candidate) => {
         try {
-          const ok = await this.pingUrl(new URL('/api/health', candidate), 250);
+          const ok = await this.pingUrl(new URL('/api/health', candidate), 600);
           if (ok) return candidate;
         } catch {}
         return null;
@@ -122,10 +136,11 @@ export class ShieldBridge {
       const aliveCandidate = results.find((c): c is string => Boolean(c));
       if (aliveCandidate) {
         this.detectedBaseUrl = aliveCandidate;
+        this.failedPingCount = 0;
         return aliveCandidate;
       }
     } catch {}
-    return 'http://127.0.0.1:8765';
+    return 'http://127.0.0.1:8045';
   }
 
   public isLastKnownOnline(): boolean {
@@ -139,9 +154,10 @@ export class ShieldBridge {
     try {
       const baseUrl = await this.getBaseUrl();
       const url = new URL('/api/health', baseUrl);
-      const isOnline = await this.pingUrl(url, 400);
+      const isOnline = await this.pingUrl(url, 800);
       if (isOnline) {
         this.detectedBaseUrl = baseUrl;
+        this.failedPingCount = 0;
         return true;
       }
     } catch {
@@ -149,26 +165,29 @@ export class ShieldBridge {
     }
 
     // Check candidate ports in parallel for fast discovery
-    const ports = [8045, 8766, 8046, 8765, 8047];
+    const ports = [8045, 8765, 8766, 8046, 8047];
     const checks = ports.map(async (port) => {
       try {
-        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/health`), 350);
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/health`), 600);
         if (isOnline) {
           this.detectedBaseUrl = `http://127.0.0.1:${port}`;
+          this.failedPingCount = 0;
           return true;
         }
       } catch {}
       try {
-        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/toolkit/status`), 350);
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/api/toolkit/status`), 600);
         if (isOnline) {
           this.detectedBaseUrl = `http://127.0.0.1:${port}`;
+          this.failedPingCount = 0;
           return true;
         }
       } catch {}
       try {
-        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/toolkit/status`), 350);
+        const isOnline = await this.pingUrl(new URL(`http://127.0.0.1:${port}/toolkit/status`), 600);
         if (isOnline) {
           this.detectedBaseUrl = `http://127.0.0.1:${port}`;
+          this.failedPingCount = 0;
           return true;
         }
       } catch {}

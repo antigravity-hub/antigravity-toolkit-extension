@@ -397,11 +397,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         ]).catch(() => this.conversationService.getCachedSessions()),
         Promise.race([
           ShieldBridge.getInstance().isShieldOnline(),
-          new Promise<boolean>((res) => setTimeout(() => res(ShieldBridge.getInstance().isLastKnownOnline()), 1200))
+          new Promise<boolean>((res) => setTimeout(() => res(ShieldBridge.getInstance().isLastKnownOnline()), 2500))
         ]).catch(() => false),
         Promise.race([
           ShieldBridge.getInstance().getTokenStats(),
-          new Promise<TokenUsageStats | null>((res) => setTimeout(() => res(null), 600))
+          new Promise<TokenUsageStats | null>((res) => setTimeout(() => res(null), 2000))
         ]).catch(() => null),
       ]);
 
@@ -833,7 +833,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             <span class="hud-pulse-icon">📊</span>
             <span class="hud-heading">Token Usage Telemetry</span>
           </div>
-          <span class="hud-status-badge">${tokenStats ? 'Shield Live Stream' : 'Shield Offline'}</span>
+          <span class="hud-status-badge">${isShieldOnline ? (tokenStats ? 'Shield Live Stream' : 'Shield Connected') : 'Shield Offline'}</span>
         </div>
 
         <div class="hud-grid">
