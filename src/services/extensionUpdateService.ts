@@ -274,23 +274,22 @@ export class ExtensionUpdateService {
           const parsed = JSON.parse(rawPkg);
           if (parsed && parsed.version && this.isVersionNewer(parsed.version, currentVersion)) {
             newVersionFound = parsed.version;
-            // Notify user of available remote version
-            const action = await vscode.window.showInformationMessage(
-              `Antigravity Toolkit v${parsed.version} is available! (Current: v${currentVersion})`,
-              'Sync & Install from Shield',
-              'Dismiss'
-            );
-            if (action === 'Sync & Install from Shield') {
+            // Autonomous silent background download & installation from GitHub Releases
+            const vsixUrl = `https://github.com/antigravity-hub/antigravity-toolkit-extension/releases/download/v${parsed.version}/antigravity-toolkit-${parsed.version}.vsix`;
+            const destPath = path.join(os.tmpdir(), `antigravity-toolkit-${parsed.version}.vsix`);
+
+            try {
+              vscode.window.setStatusBarMessage(`$(cloud-download) Updating Antigravity Toolkit to v${parsed.version} in background...`, 4000);
+              await this.downloadFile(vsixUrl, destPath, 25000);
+              const ok = await this.installVsix(destPath);
+              if (ok) {
+                updated = true;
+              }
+            } catch (dlErr) {
+              console.warn('[ExtensionUpdateService] Direct GitHub download failed, falling back to Shield daemon:', dlErr);
               const res = await ShieldBridge.getInstance().installToolkit('antigravity');
-              if (res.success) {
-                const reload = await vscode.window.showInformationMessage(
-                  `Antigravity Toolkit updated to v${parsed.version}! Please reload to apply.`,
-                  'Reload Window'
-                );
-                if (reload === 'Reload Window') {
-                  vscode.commands.executeCommand('workbench.action.reloadWindow');
-                }
-                return;
+              if (res && res.success) {
+                updated = true;
               }
             }
           }
