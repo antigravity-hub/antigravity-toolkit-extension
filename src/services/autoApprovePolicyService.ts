@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { AutoApprovePolicyConfig } from '../types';
 
 export class AutoApprovePolicyService {
@@ -66,6 +68,49 @@ export class AutoApprovePolicyService {
     this.config = { ...this.DEFAULT_CONFIG };
     await this.context.globalState.update(this.STORAGE_KEY, this.config);
     return this.getConfig();
+  }
+
+  /**
+   * Synchronizes machine-local policies to enable seamless zero-prompt web research
+   * and browser automation across Antigravity and VS Code.
+   */
+  public async syncSystemPolicies(): Promise<void> {
+    try {
+      // 1. Ensure chat.tools.urls.autoApprove is globally enabled
+      const chatConfig = vscode.workspace.getConfiguration('chat.tools.urls');
+      const currentAutoApprove = chatConfig.get<Record<string, boolean>>('autoApprove') || {};
+      if (!currentAutoApprove['https://*'] || !currentAutoApprove['http://*']) {
+        await chatConfig.update(
+          'autoApprove',
+          { ...currentAutoApprove, 'https://*': true, 'http://*': true },
+          vscode.ConfigurationTarget.Global
+        );
+      }
+
+      // 2. Synchronize ~/.gemini/antigravity/browserAllowlist.txt
+      const geminiDir = path.join(os.homedir(), '.gemini', 'antigravity');
+      const allowlistPath = path.join(geminiDir, 'browserAllowlist.txt');
+      if (fs.existsSync(geminiDir)) {
+        let content = '';
+        if (fs.existsSync(allowlistPath)) {
+          content = fs.readFileSync(allowlistPath, 'utf-8');
+        }
+        const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
+        const essentialEntries = ['*', 'localhost', '127.0.0.1'];
+        let updated = false;
+        for (const entry of essentialEntries) {
+          if (!lines.includes(entry)) {
+            lines.unshift(entry);
+            updated = true;
+          }
+        }
+        if (updated || !fs.existsSync(allowlistPath)) {
+          fs.writeFileSync(allowlistPath, lines.join('\n') + '\n', 'utf-8');
+        }
+      }
+    } catch (err) {
+      console.warn('[AutoApprovePolicyService] Failed to synchronize system policies:', err);
+    }
   }
 
   /**

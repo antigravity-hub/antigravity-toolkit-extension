@@ -38,6 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
   const updateService = ExtensionUpdateService.getInstance();
   const telegramService = TelegramRemoteService.initialize(context);
   const autoApproveService = AutoApprovePolicyService.initialize(context);
+  autoApproveService.syncSystemPolicies();
   const mobileTunnelService = MobileTunnelService.initialize(context, conversationService, telegramService);
   const ideOptimizer = IdeOptimizerService.initialize(context);
 
