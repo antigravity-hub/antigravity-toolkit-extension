@@ -22,6 +22,7 @@ export class AutoSwitchService {
   private lastSwitchTimestamp = 0;
   private lastSwitchReason = '';
   private lastProactiveProbeTimestamp = 0;
+  private consecutiveProbeFailures = 0;
   private enabled = true;
 
   private onDidChangeStatusEmitter = new vscode.EventEmitter<AutoSwitchStatus>();
@@ -173,19 +174,35 @@ export class AutoSwitchService {
 
       // Proactive Quota Probe:
       // Keep quota sync alive from Shield during active IDE usage.
-      // - If active session is in low-quota danger zone (<= 25% and > 0%), probe every 25 seconds.
-      // - If quota is healthy (> 25%), probe every 90 seconds so gradual depletion during continuous coding is captured live!
-      const probeIntervalMs = activeHealth > 0 && activeHealth <= 25 ? 25000 : 90000;
-      if (now - this.lastProactiveProbeTimestamp >= probeIntervalMs) {
-        this.lastProactiveProbeTimestamp = now;
-        console.log(
-          `[AutoSwitch] Proactive quota probe for ${activeAccount.email} (Health: ${activeHealth}%). Requesting live sync from Shield...`
-        );
-        import('../bridge/shieldBridge').then(({ ShieldBridge }) => {
-          ShieldBridge.getInstance()
-            .refreshAccountQuota(activeAccount.id || activeAccount.email)
-            .catch(() => {});
-        });
+      // Skip if account is disabled or blocked in Shield to prevent hammering with dead requests.
+      const isUsable = this.accountService.isAccountUsable(activeAccount);
+      if (isUsable) {
+        // Base interval: 45s for danger zone (<= 25%), 120s for normal (> 25%)
+        const baseIntervalMs = activeHealth > 0 && activeHealth <= 25 ? 45000 : 120000;
+        // Exponential backoff if probes fail (multiplier up to 5x: 45s -> 67s -> 101s -> 151s -> 225s)
+        const backoffMultiplier = Math.min(5, Math.pow(1.5, this.consecutiveProbeFailures));
+        const probeIntervalMs = Math.round(baseIntervalMs * backoffMultiplier);
+
+        if (now - this.lastProactiveProbeTimestamp >= probeIntervalMs) {
+          this.lastProactiveProbeTimestamp = now;
+          console.log(
+            `[AutoSwitch] Proactive quota probe for ${activeAccount.email} (Health: ${activeHealth}%, Backoff: ${backoffMultiplier.toFixed(1)}x). Requesting live sync from Shield...`
+          );
+          import('../bridge/shieldBridge').then(async ({ ShieldBridge }) => {
+            try {
+              const ok = await ShieldBridge.getInstance().refreshAccountQuota(
+                activeAccount.id || activeAccount.email
+              );
+              if (ok) {
+                this.consecutiveProbeFailures = 0;
+              } else {
+                this.consecutiveProbeFailures++;
+              }
+            } catch {
+              this.consecutiveProbeFailures++;
+            }
+          });
+        }
       }
 
       if (!isCritical) {

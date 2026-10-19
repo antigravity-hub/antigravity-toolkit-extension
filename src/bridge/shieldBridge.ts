@@ -956,13 +956,17 @@ export class ShieldBridge {
     try {
       if (accountIdOrEmail) {
         const encoded = encodeURIComponent(accountIdOrEmail);
-        const res = await this.postShieldApi<any>(`/accounts/${encoded}/refresh`, {});
+        const res = await this.postShieldApi<any>(`/api/accounts/${encoded}/refresh`, {});
         if (res && res.success) return true;
-        const res2 = await this.postShieldApi<any>(`/toolkit/accounts/${encoded}/refresh`, {});
+        const res2 = await this.postShieldApi<any>(`/accounts/${encoded}/refresh`, {});
         if (res2 && res2.success) return true;
+        const res3 = await this.postShieldApi<any>(`/toolkit/accounts/${encoded}/refresh`, {});
+        if (res3 && res3.success) return true;
       }
-      const fallback = await this.postShieldApi<any>('/accounts/refresh', {});
-      return Boolean(fallback && fallback.success);
+      const fallback = await this.postShieldApi<any>('/api/accounts/refresh', {});
+      if (fallback && fallback.success) return true;
+      const fallback2 = await this.postShieldApi<any>('/accounts/refresh', {});
+      return Boolean(fallback2 && fallback2.success);
     } catch {
       return false;
     }
@@ -972,8 +976,10 @@ export class ShieldBridge {
    * Triggers a batch refresh for all accounts in Shield.
    */
   public async refreshAllQuotas(): Promise<boolean> {
-    const res = await this.postShieldApi<any>('/accounts/refresh', {});
-    return Boolean(res && res.success);
+    const res = await this.postShieldApi<any>('/api/accounts/refresh', {});
+    if (res && res.success) return true;
+    const res2 = await this.postShieldApi<any>('/accounts/refresh', {});
+    return Boolean(res2 && res2.success);
   }
 
   /**
