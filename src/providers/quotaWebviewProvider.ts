@@ -125,6 +125,20 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           const current = this.autoSwitchService.isEnabled();
           await this.autoSwitchService.setEnabled(!current);
           break;
+        case 'toggleArgonOverride': {
+          const currentArgon = await ShieldBridge.getInstance().getArgonOverride();
+          const nextEnabled = !currentArgon?.enabled;
+          await ShieldBridge.getInstance().setArgonOverride(nextEnabled, currentArgon?.tier || 'high');
+          await this.updateWebview();
+          break;
+        }
+        case 'setArgonTier': {
+          if (message.tier && ['high', 'medium', 'low'].includes(message.tier)) {
+            await ShieldBridge.getInstance().setArgonOverride(true, message.tier);
+            await this.updateWebview();
+          }
+          break;
+        }
         case 'addAccount':
           await vscode.commands.executeCommand('antigravityToolkit.addAccount');
           break;
@@ -388,6 +402,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         allConversations,
         isShieldOnline,
         tokenStats,
+        argonOverride,
       ] = await Promise.all([
         Promise.race([
           this.conversationService.getConversations(),
@@ -402,6 +417,12 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         Promise.race([
           ShieldBridge.getInstance().getTokenStats(),
           new Promise<TokenUsageStats | null>((res) => setTimeout(() => res(null), 2000))
+        ]).catch(() => null),
+        Promise.race([
+          ShieldBridge.getInstance().getArgonOverride(),
+          new Promise<{ enabled: boolean; tier: 'high' | 'medium' | 'low'; target_model?: string } | null>((res) =>
+            setTimeout(() => res(null), 1500)
+          ),
         ]).catch(() => null),
       ]);
 
@@ -459,7 +480,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         tokenStats,
         activeModels.activeModelName,
         this._activeTab,
-        activeModels
+        activeModels,
+        this._lastContentSearchQuery,
+        this._lastTitleSearchQuery,
+        argonOverride
       );
     } catch (err: any) {
       console.error('[QuotaWebviewProvider] Error updating webview:', err);
@@ -485,8 +509,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     activeTab: string = 'overview',
     activeModels?: ActiveChatModelsResult,
     savedContentQuery: string = this._lastContentSearchQuery,
-    savedTitleQuery: string = this._lastTitleSearchQuery
+    savedTitleQuery: string = this._lastTitleSearchQuery,
+    argonOverride?: { enabled: boolean; tier: 'high' | 'medium' | 'low'; target_model?: string } | null
   ): string {
+    const isArgonOn = argonOverride?.enabled ?? false;
+    const argonTier = argonOverride?.tier || 'high';
     const activeEmail = activeAccount ? activeAccount.email : 'No active account';
     const activeTier = activeAccount ? activeAccount.tier || 'Google AI Pro' : 'Free';
     const activeHealth = activeAccount ? Math.round(this.accountService.getAccountHealth(activeAccount)) : 0;
@@ -1589,6 +1616,120 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     .btn-toggle-auto:hover {
+      transform: scale(1.05);
+    }
+
+    /* Argon Brain Override Bar */
+    .argon-bar {
+      margin-top: 8px;
+      background: var(--card-bg);
+      border: 1px solid ${isArgonOn ? 'rgba(168, 85, 247, 0.4)' : 'var(--card-border)'};
+      border-radius: 12px;
+      padding: 8px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: ${isArgonOn ? '0 0 14px -2px rgba(168, 85, 247, 0.25)' : 'var(--card-shadow)'};
+      transition: all 0.25s ease;
+    }
+
+    .argon-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .argon-beacon {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: ${isArgonOn ? '#a855f7' : 'var(--text-muted)'};
+      box-shadow: ${isArgonOn ? '0 0 8px #a855f7' : 'none'};
+      animation: ${isArgonOn ? 'pulseWave 2s infinite' : 'none'};
+      flex-shrink: 0;
+    }
+
+    .argon-text-main {
+      font-size: 10.5px;
+      font-weight: 700;
+      color: ${isArgonOn ? '#c084fc' : 'var(--text-primary)'};
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .argon-status-tag {
+      font-size: 9px;
+      font-family: monospace;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--card-border);
+      color: var(--text-muted);
+      font-weight: 700;
+    }
+
+    .argon-status-tag.active {
+      background: rgba(168, 85, 247, 0.2);
+      color: #c084fc;
+      border: 1px solid rgba(168, 85, 247, 0.3);
+    }
+
+    .argon-text-sub {
+      font-size: 9.5px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .argon-controls {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .argon-tier-selector {
+      display: flex;
+      align-items: center;
+      background: rgba(168, 85, 247, 0.1);
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+      border: 1px solid rgba(168, 85, 247, 0.2);
+    }
+
+    .btn-tier {
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 9px;
+      font-weight: 700;
+      padding: 2px 5px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .btn-tier:hover {
+      color: #c084fc;
+    }
+
+    .btn-tier.active {
+      background: #9333ea;
+      color: #ffffff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+    }
+
+    .btn-toggle-argon {
+      background: ${isArgonOn ? 'linear-gradient(135deg, #7e22ce 0%, #a855f7 100%)' : 'var(--btn-secondary-bg)'};
+      color: ${isArgonOn ? '#fff' : 'var(--btn-secondary-text)'};
+      border: 1px solid ${isArgonOn ? '#c084fc' : 'var(--btn-secondary-border)'};
+      padding: 4px 10px;
+      border-radius: 16px;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+
+    .btn-toggle-argon:hover {
       transform: scale(1.05);
     }
 
@@ -3949,6 +4090,31 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         </button>
       </div>
 
+      <!-- Gemini 4 Argon Brain Override HUD Bar -->
+      <div class="argon-bar ${isArgonOn ? 'argon-active' : ''}">
+        <div class="argon-left">
+          <div class="argon-beacon ${isArgonOn ? 'argon-beacon-active' : ''}"></div>
+          <div>
+            <div class="argon-text-main">
+              <span>ARGON BRAIN:</span>
+              <span class="argon-status-tag ${isArgonOn ? 'active' : ''}">${isArgonOn ? argonTier.toUpperCase() : 'OFF'}</span>
+            </div>
+            <div class="argon-text-sub">${isArgonOn ? `Flash traffic redirected to Gemini 4 Argon (${argonTier === 'high' ? '24.5k reasoning' : argonTier === 'medium' ? '4k reasoning' : '1k reasoning'})` : 'Passthrough mode (Native Flash)'}</div>
+          </div>
+        </div>
+        <div class="argon-controls">
+          ${isArgonOn ? `
+          <div class="argon-tier-selector">
+            <button class="btn-tier ${argonTier === 'high' ? 'active' : ''}" onclick="setArgonTier('high')" title="High Reasoning (24.5k tokens)">H</button>
+            <button class="btn-tier ${argonTier === 'medium' ? 'active' : ''}" onclick="setArgonTier('medium')" title="Medium Reasoning (4k tokens)">M</button>
+            <button class="btn-tier ${argonTier === 'low' ? 'active' : ''}" onclick="setArgonTier('low')" title="Low Reasoning (1k tokens)">L</button>
+          </div>` : ''}
+          <button class="btn-toggle-argon" onclick="toggleArgonOverride()">
+            ${isArgonOn ? 'ON ✨' : 'OFF'}
+          </button>
+        </div>
+      </div>
+
       <!-- Simplified Quota Groups (Gemini & Claude) -->
       <div class="subhead-title">
         <span>AI Quotas & Windows</span>
@@ -4676,6 +4842,14 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
 
     function toggleAutoSwitch() {
       vscode.postMessage({ command: 'toggleAutoSwitch' });
+    }
+
+    function toggleArgonOverride() {
+      vscode.postMessage({ command: 'toggleArgonOverride' });
+    }
+
+    function setArgonTier(tier) {
+      vscode.postMessage({ command: 'setArgonTier', tier: tier });
     }
 
     function addAccount() {
