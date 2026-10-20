@@ -1111,6 +1111,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           autoApproveReads: true,
           autoApproveWorkspaceWrites: true,
           autoApproveSafeCommands: true,
+          autoApproveBrowserWeb: true,
           commandWhitelist: ['npm test', 'npm run build', 'cargo check', 'cargo test', 'git status', 'git diff', 'pytest'],
           zeroTokenWasteCircuitBreaker: true,
           maxConsecutiveFailures: 3,
@@ -3909,6 +3910,10 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
             <input type="checkbox" id="policy-commands" ${policyConfig.autoApproveSafeCommands ? 'checked' : ''} />
             <span>Auto-Approve Whitelisted Shell Commands</span>
           </label>
+          <label class="remote-check-item" style="color: #38bdf8;">
+            <input type="checkbox" id="policy-browser-web" ${policyConfig.autoApproveBrowserWeb !== false ? 'checked' : ''} />
+            <span>🌐 Zero-Prompt Web & Browser Automation (Wildcard Allowlist)</span>
+          </label>
           <label class="remote-check-item">
             <input type="checkbox" id="policy-circuit-breaker" ${policyConfig.zeroTokenWasteCircuitBreaker ? 'checked' : ''} />
             <span>Zero-Token Waste Loop & Stagnation Circuit Breaker</span>
@@ -5452,6 +5457,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       var readsInput = document.getElementById('policy-reads');
       var writesInput = document.getElementById('policy-writes');
       var commandsInput = document.getElementById('policy-commands');
+      var browserWebInput = document.getElementById('policy-browser-web');
       var cbInput = document.getElementById('policy-circuit-breaker');
       var wlInput = document.getElementById('policy-whitelist');
       var maxFInput = document.getElementById('policy-max-failures');
@@ -5461,6 +5467,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       var reads = readsInput ? readsInput.checked : true;
       var writes = writesInput ? writesInput.checked : true;
       var commands = commandsInput ? commandsInput.checked : true;
+      var browserWeb = browserWebInput ? browserWebInput.checked : true;
       var cb = cbInput ? cbInput.checked : true;
       var wlRaw = wlInput ? wlInput.value.trim() : '';
       var maxF = parseInt(maxFInput ? maxFInput.value : '3', 10);
@@ -5475,6 +5482,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
           autoApproveReads: reads,
           autoApproveWorkspaceWrites: writes,
           autoApproveSafeCommands: commands,
+          autoApproveBrowserWeb: browserWeb,
           zeroTokenWasteCircuitBreaker: cb,
           commandWhitelist: wlList,
           maxConsecutiveFailures: isNaN(maxF) ? 3 : maxF,

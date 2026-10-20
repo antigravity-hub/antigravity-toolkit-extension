@@ -171,6 +171,7 @@ export interface AutoApprovePolicyConfig {
   autoApproveReads: boolean;
   autoApproveWorkspaceWrites: boolean;
   autoApproveSafeCommands: boolean;
+  autoApproveBrowserWeb?: boolean;
   commandWhitelist: string[];
   zeroTokenWasteCircuitBreaker: boolean;
   maxConsecutiveFailures: number;

@@ -17,6 +17,7 @@ export class AutoApprovePolicyService {
     autoApproveReads: true,
     autoApproveWorkspaceWrites: true,
     autoApproveSafeCommands: true,
+    autoApproveBrowserWeb: true,
     commandWhitelist: [
       'npm test',
       'npm run build',
@@ -61,51 +62,81 @@ export class AutoApprovePolicyService {
   public async saveConfig(partial: Partial<AutoApprovePolicyConfig>): Promise<AutoApprovePolicyConfig> {
     this.config = { ...this.config, ...partial };
     await this.context.globalState.update(this.STORAGE_KEY, this.config);
+    await this.syncSystemPolicies();
     return this.getConfig();
   }
 
   public async resetDefaults(): Promise<AutoApprovePolicyConfig> {
     this.config = { ...this.DEFAULT_CONFIG };
     await this.context.globalState.update(this.STORAGE_KEY, this.config);
+    await this.syncSystemPolicies();
     return this.getConfig();
   }
 
   /**
    * Synchronizes machine-local policies to enable seamless zero-prompt web research
-   * and browser automation across Antigravity and VS Code.
+   * and browser automation across Antigravity IDE and VS Code.
    */
   public async syncSystemPolicies(): Promise<void> {
     try {
-      // 1. Ensure chat.tools.urls.autoApprove is globally enabled
+      const isBrowserWebEnabled = this.config.enabled && this.config.autoApproveBrowserWeb !== false;
+
+      // 1. Ensure chat.tools.urls.autoApprove is globally configured
       const chatConfig = vscode.workspace.getConfiguration('chat.tools.urls');
       const currentAutoApprove = chatConfig.get<Record<string, boolean>>('autoApprove') || {};
-      if (!currentAutoApprove['https://*'] || !currentAutoApprove['http://*']) {
-        await chatConfig.update(
-          'autoApprove',
-          { ...currentAutoApprove, 'https://*': true, 'http://*': true },
-          vscode.ConfigurationTarget.Global
-        );
+      if (isBrowserWebEnabled) {
+        if (!currentAutoApprove['https://*'] || !currentAutoApprove['http://*']) {
+          await chatConfig.update(
+            'autoApprove',
+            { ...currentAutoApprove, 'https://*': true, 'http://*': true },
+            vscode.ConfigurationTarget.Global
+          );
+        }
       }
 
-      // 2. Synchronize ~/.gemini/antigravity/browserAllowlist.txt
-      const geminiDir = path.join(os.homedir(), '.gemini', 'antigravity');
-      const allowlistPath = path.join(geminiDir, 'browserAllowlist.txt');
-      if (fs.existsSync(geminiDir)) {
+      // 2. Synchronize browserAllowlist.txt across both ~/.gemini/antigravity and ~/.gemini/antigravity-ide
+      const baseGeminiDir = path.join(os.homedir(), '.gemini');
+      const targetDirs = [
+        path.join(baseGeminiDir, 'antigravity'),
+        path.join(baseGeminiDir, 'antigravity-ide'),
+      ];
+
+      for (const geminiDir of targetDirs) {
+        if (!fs.existsSync(geminiDir)) {
+          if (geminiDir.endsWith('antigravity')) {
+            try {
+              fs.mkdirSync(geminiDir, { recursive: true });
+            } catch (_) {}
+          } else {
+            continue;
+          }
+        }
+
+        const allowlistPath = path.join(geminiDir, 'browserAllowlist.txt');
         let content = '';
         if (fs.existsSync(allowlistPath)) {
           content = fs.readFileSync(allowlistPath, 'utf-8');
         }
-        const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
-        const essentialEntries = ['*', 'localhost', '127.0.0.1'];
-        let updated = false;
-        for (const entry of essentialEntries) {
-          if (!lines.includes(entry)) {
-            lines.unshift(entry);
-            updated = true;
+        let lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+        if (isBrowserWebEnabled) {
+          const essentialEntries = ['*', 'localhost', '127.0.0.1'];
+          let updated = false;
+          for (const entry of essentialEntries) {
+            if (!lines.includes(entry)) {
+              lines.unshift(entry);
+              updated = true;
+            }
           }
-        }
-        if (updated || !fs.existsSync(allowlistPath)) {
-          fs.writeFileSync(allowlistPath, lines.join('\n') + '\n', 'utf-8');
+          if (updated || !fs.existsSync(allowlistPath)) {
+            fs.writeFileSync(allowlistPath, lines.join('\n') + '\n', 'utf-8');
+          }
+        } else {
+          // If disabled, remove the wildcard entry '*' while keeping explicit domains
+          if (lines.includes('*')) {
+            lines = lines.filter((l) => l !== '*');
+            fs.writeFileSync(allowlistPath, lines.join('\n') + '\n', 'utf-8');
+          }
         }
       }
     } catch (err) {
