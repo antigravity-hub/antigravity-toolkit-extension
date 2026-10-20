@@ -240,65 +240,6 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('antigravityToolkit.configureArgonBrain', async () => {
-      const bridge = ShieldBridge.getInstance();
-      const current = await bridge.getArgonOverride();
-
-      const items: (vscode.QuickPickItem & { enabled: boolean; tier: 'high' | 'medium' | 'low' })[] = [
-        {
-          label: '$(sparkles) Gemini 4 Argon - High Tier',
-          description: current?.enabled && current.tier === 'high' ? '$(check) Current Active' : '~24.5k Thinking Budget',
-          detail: 'Maximum reasoning depth for complex architecture, heavy refactoring & system design.',
-          enabled: true,
-          tier: 'high',
-        },
-        {
-          label: '$(zap) Gemini 4 Argon - Medium Tier',
-          description: current?.enabled && current.tier === 'medium' ? '$(check) Current Active' : '4,000 Thinking Budget',
-          detail: 'Optimal balanced reasoning speed & intelligence for general pair programming.',
-          enabled: true,
-          tier: 'medium',
-        },
-        {
-          label: '$(flame) Gemini 4 Argon - Low Tier',
-          description: current?.enabled && current.tier === 'low' ? '$(check) Current Active' : '1,024 Thinking Budget',
-          detail: 'Minimal reasoning latency floor for swift code completions & rapid queries.',
-          enabled: true,
-          tier: 'low',
-        },
-        {
-          label: '$(circle-slash) Disable Argon Brain Override',
-          description: !current?.enabled ? '$(check) Current State' : 'Native Model Flow',
-          detail: 'Pass all IDE chat requests directly to native IDE models (Gemini 3.8 Flash unmodified).',
-          enabled: false,
-          tier: 'high',
-        },
-      ];
-
-      const selected = await vscode.window.showQuickPick(items, {
-        placeHolder: 'Select Gemini 4 Argon reasoning tier or disable IDE override',
-        title: '⚡ Gemini 4 Argon Brain (IDE Hijack)',
-      });
-
-      if (!selected) return;
-
-      const success = await bridge.setArgonOverride(selected.enabled, selected.tier);
-      if (success) {
-        await statusBar.updateArgonStatus();
-        if (selected.enabled) {
-          vscode.window.showInformationMessage(
-            `⚡ Gemini 4 Argon Brain active in ${selected.tier.toUpperCase()} tier! All IDE Flash chats now route to Argon.`
-          );
-        } else {
-          vscode.window.showInformationMessage('⚪ Gemini 4 Argon Brain disabled. Using native IDE models.');
-        }
-      } else {
-        vscode.window.showErrorMessage('Failed to communicate with Antigravity Shield daemon to update Argon Brain.');
-      }
-    })
-  );
-
-  context.subscriptions.push(
     vscode.commands.registerCommand('antigravityToolkit.restartLanguageServer', async () => {
       const ok = await networkWatchdog.restartLanguageServerSilently();
       if (ok) {
