@@ -997,6 +997,33 @@ export class ShieldBridge {
   }
 
   /**
+   * Retrieves active Gemini 4 Argon Brain Override state from Shield.
+   */
+  public async getArgonOverride(): Promise<{ enabled: boolean; tier: 'high' | 'medium' | 'low'; target_model?: string } | null> {
+    try {
+      const res = await this.fetchShieldApi<{ enabled: boolean; tier: 'high' | 'medium' | 'low'; target_model?: string }>('/toolkit/argon-override');
+      return res;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Updates Gemini 4 Argon Brain Override configuration on Shield daemon.
+   */
+  public async setArgonOverride(enabled: boolean, tier: 'high' | 'medium' | 'low'): Promise<boolean> {
+    try {
+      const res = await this.postShieldApi<{ status: string; enabled: boolean; tier: string }>('/toolkit/argon-override', {
+        enabled,
+        tier,
+      });
+      return Boolean(res && res.status === 'ok');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Starts Cloudflare Quick Tunnel via Shield daemon.
    */
   public async startCloudflareTunnel(): Promise<string | null> {

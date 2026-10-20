@@ -3,9 +3,11 @@ import { AccountService } from '../services/accountService';
 import { QuotaService } from '../services/quotaService';
 import { AutoSwitchService } from '../services/autoSwitchService';
 import { NetworkWatchdogService } from '../services/networkWatchdogService';
+import { ShieldBridge } from '../bridge/shieldBridge';
 
 export class StatusBarManager {
   private statusBarItem: vscode.StatusBarItem;
+  private argonStatusBarItem: vscode.StatusBarItem;
 
   constructor(
     private accountService: AccountService,
@@ -19,6 +21,12 @@ export class StatusBarManager {
     );
     this.statusBarItem.command = 'antigravityToolkit.openQuotaDashboard';
 
+    this.argonStatusBarItem = vscode.window.createStatusBarItem(
+      vscode.StatusBarAlignment.Right,
+      99
+    );
+    this.argonStatusBarItem.command = 'antigravityToolkit.configureArgonBrain';
+
     this.accountService.onDidChangeAccounts(() => this.update());
     this.quotaService.onDidChangeQuotas(() => this.update());
     this.autoSwitchService.onDidChangeStatus(() => this.update());
@@ -28,6 +36,7 @@ export class StatusBarManager {
   }
 
   public async update(): Promise<void> {
+    await this.updateArgonStatus();
     const config = vscode.workspace.getConfiguration('antigravityToolkit');
     const enabled = config.get<boolean>('showStatusBarBadge', true);
     if (!enabled) {
@@ -102,7 +111,45 @@ export class StatusBarManager {
     this.statusBarItem.show();
   }
 
+  public async updateArgonStatus(): Promise<void> {
+    try {
+      const bridge = ShieldBridge.getInstance();
+      const status = await bridge.getArgonOverride();
+      if (!status || !status.enabled) {
+        this.argonStatusBarItem.text = '$(shield) Argon: Off';
+        this.argonStatusBarItem.backgroundColor = undefined;
+        const tip = new vscode.MarkdownString();
+        tip.isTrusted = true;
+        tip.supportThemeIcons = true;
+        tip.appendMarkdown(`### $(shield) Gemini 4 Argon Brain Override\n\n`);
+        tip.appendMarkdown(`**Status:** ⚪ Inactive (IDE uses native Flash models)\n\n`);
+        tip.appendMarkdown(`Click to route IDE Flash chat requests directly into **Gemini 4 Argon** with deep reasoning.\n\n`);
+        tip.appendMarkdown(`---\n\n`);
+        tip.appendMarkdown(`[$(sparkles) Configure & Enable Argon Brain](command:antigravityToolkit.configureArgonBrain)`);
+        this.argonStatusBarItem.tooltip = tip;
+      } else {
+        const tierUpper = (status.tier || 'high').toUpperCase();
+        this.argonStatusBarItem.text = `$(sparkles) Argon: ${tierUpper}`;
+        this.argonStatusBarItem.backgroundColor = undefined;
+        const tip = new vscode.MarkdownString();
+        tip.isTrusted = true;
+        tip.supportThemeIcons = true;
+        tip.appendMarkdown(`### $(sparkles) Gemini 4 Argon Brain Active\n\n`);
+        tip.appendMarkdown(`**Target Model:** \`${status.target_model || 'gemini-4-argon-' + status.tier}\`\n\n`);
+        tip.appendMarkdown(`**Reasoning Tier:** **${tierUpper}**\n\n`);
+        tip.appendMarkdown(`**Mode:** 🟢 All IDE chat traffic targeting Gemini 3.8 Flash is hijacked and routed to Gemini 4 Argon with deep thinking.\n\n`);
+        tip.appendMarkdown(`---\n\n`);
+        tip.appendMarkdown(`[$(gear) Switch Tier / Disable](command:antigravityToolkit.configureArgonBrain)`);
+        this.argonStatusBarItem.tooltip = tip;
+      }
+      this.argonStatusBarItem.show();
+    } catch {
+      this.argonStatusBarItem.hide();
+    }
+  }
+
   public dispose(): void {
     this.statusBarItem.dispose();
+    this.argonStatusBarItem.dispose();
   }
 }

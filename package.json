@@ -2,7 +2,7 @@
   "name": "antigravity-toolkit",
   "displayName": "Antigravity Toolkit",
   "description": "Next-Gen IDE HUD for Google Antigravity: Cyber-Glass quota telemetry, autonomous multi-account rotation, instant live session switching, and crash-resilient chat recovery.",
-  "version": "2.7.9",
+  "version": "2.8.0-beta.1",
   "publisher": "antigravity-hub",
   "repository": {
     "type": "git",
@@ -82,6 +82,12 @@
         "title": "Open Full Quota Dashboard",
         "category": "Antigravity Toolkit",
         "icon": "$(dashboard)"
+      },
+      {
+        "command": "antigravityToolkit.configureArgonBrain",
+        "title": "Configure Gemini 4 Argon Brain",
+        "category": "Antigravity Toolkit",
+        "icon": "$(sparkles)"
       },
       {
         "command": "antigravityToolkit.toggleAutoSwitch",
