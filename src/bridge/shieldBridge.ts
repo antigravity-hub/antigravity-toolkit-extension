@@ -351,7 +351,10 @@ export class ShieldBridge {
 
                   if (Array.isArray(g.buckets)) {
                     for (const b of g.buckets) {
-                      const isWeekly = b.window === 'weekly';
+                      const win = (b.window || '').toLowerCase();
+                      const id = (b.bucket_id || b.bucketId || '').toLowerCase();
+                      const disp = (b.display_name || b.displayName || '').toLowerCase();
+                      const isWeekly = win.includes('week') || id.includes('week') || disp.includes('week') || win.includes('604800') || win.includes('168') || win.includes('7d') || id.includes('7d');
                       const remaining = typeof b.remaining_fraction === 'number'
                         ? ShieldBridge.safeQuotaPercentage(b.remaining_fraction)
                         : typeof b.percentage === 'number'
