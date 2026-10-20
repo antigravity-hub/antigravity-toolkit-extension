@@ -279,7 +279,9 @@ export class ExtensionUpdateService {
             const destPath = path.join(os.tmpdir(), `antigravity-toolkit-${parsed.version}.vsix`);
 
             try {
-              vscode.window.setStatusBarMessage(`$(cloud-download) Updating Antigravity Toolkit to v${parsed.version} in background...`, 4000);
+              if (userInitiated) {
+                vscode.window.setStatusBarMessage(`$(cloud-download) Updating Antigravity Toolkit to v${parsed.version}...`, 4000);
+              }
               await this.downloadFile(vsixUrl, destPath, 25000);
               const ok = await this.installVsix(destPath);
               if (ok) {
@@ -299,13 +301,17 @@ export class ExtensionUpdateService {
       }
 
       if (updated) {
-        const choice = await vscode.window.showInformationMessage(
-          `Antigravity Toolkit has been updated to v${newVersionFound}! Reload window to apply changes.`,
-          'Reload Window',
-          'Later'
-        );
-        if (choice === 'Reload Window') {
-          await vscode.commands.executeCommand('workbench.action.reloadWindow');
+        if (userInitiated) {
+          const choice = await vscode.window.showInformationMessage(
+            `Antigravity Toolkit has been updated to v${newVersionFound}! Reload window to apply changes.`,
+            'Reload Window',
+            'Later'
+          );
+          if (choice === 'Reload Window') {
+            await vscode.commands.executeCommand('workbench.action.reloadWindow');
+          }
+        } else {
+          console.log(`[ExtensionUpdateService] Silent background update to v${newVersionFound} installed.`);
         }
       } else if (userInitiated) {
         vscode.window.showInformationMessage(
