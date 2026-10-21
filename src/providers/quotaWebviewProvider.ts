@@ -567,30 +567,91 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       };
     }
 
-    // Quota Consumption & Runway Forecast Calculations
-    const primaryGroup = isClaudeActive ? (claudeGroup || geminiGroup) : (geminiGroup || claudeGroup);
-    const active5h = primaryGroup?.fiveHourBucket;
-    const activeWeekly = primaryGroup?.weeklyBucket;
-    const quotaRemPct = active5h ? active5h.remainingPercentage : 100;
-    const sessionResetMs = active5h ? active5h.resetTimeMs : defaultReset;
-    const sessionTimeRemHours = Math.max(0.1, (sessionResetMs - now) / (1000 * 3600));
-    const sessionTimeElapsedHours = Math.max(0.1, 5 - sessionTimeRemHours);
-    const sessionUsedPct = Math.max(0, 100 - quotaRemPct);
-    const hourlyBurnRatePct = sessionTimeElapsedHours > 0.05 ? (sessionUsedPct / sessionTimeElapsedHours) : 0;
+    // Fleet-Wide Quota Consumption & Runway Calculations (Matching Antigravity Shield)
+    const eligibleAccounts = (accounts || []).filter(
+      (acc) => !acc.disabled && !acc.proxyDisabled && !acc.validationBlocked && !acc.isForbidden
+    );
+    const targetAccounts = eligibleAccounts.length > 0 ? eligibleAccounts : (accounts && accounts.length > 0 ? accounts : (activeAccount ? [activeAccount] : []));
 
-    let runwayHours = 168;
-    if (hourlyBurnRatePct > 0.05) {
-      runwayHours = quotaRemPct / hourlyBurnRatePct;
+    let totalBurnRate = 0;
+    let totalQuotaRem = 0;
+    let totalTimeRemHours = 0;
+    let validCount = 0;
+
+    for (const acc of targetAccounts) {
+      let accQuotaRem = 100;
+      let accResetMs = now + 168 * 3600 * 1000;
+
+      // Extract weekly quota bucket
+      if (acc.quotaGroups && acc.quotaGroups.length > 0) {
+        for (const g of acc.quotaGroups) {
+          if (g.weeklyBucket) {
+            accQuotaRem = Math.min(accQuotaRem, g.weeklyBucket.remainingPercentage);
+            if (g.weeklyBucket.resetTimeMs && g.weeklyBucket.resetTimeMs > now) {
+              accResetMs = g.weeklyBucket.resetTimeMs;
+            }
+          }
+        }
+      } else if (acc.quotas && acc.quotas.length > 0) {
+        const weekly = acc.quotas.find(q => q.windowType === 'weekly' || q.modelId?.toLowerCase().includes('week'));
+        if (weekly) {
+          accQuotaRem = Math.max(0, 100 - weekly.usagePercentage);
+          if (weekly.resetTimeMs > now) accResetMs = weekly.resetTimeMs;
+        }
+      }
+
+      const accTimeRemHours = Math.max(0.1, (accResetMs - now) / (1000 * 3600));
+      const accTimeElapsedHours = Math.max(0.5, 168 - accTimeRemHours);
+      const accUsedPct = Math.max(0, 100 - accQuotaRem);
+      const accBurnRate = accUsedPct > 0.5 ? (accUsedPct / accTimeElapsedHours) : 0;
+
+      totalBurnRate += accBurnRate;
+      totalQuotaRem += accQuotaRem;
+      totalTimeRemHours += accTimeRemHours;
+      validCount++;
     }
-    const isSustainable = runwayHours >= sessionTimeRemHours;
-    const surplusHours = Math.max(0, Math.round(runwayHours - sessionTimeRemHours));
-    const deficitHours = Math.max(0, Math.round(sessionTimeRemHours - runwayHours));
 
-    const zoneLabel = quotaRemPct === 0 ? t('zoneCritical') : (!isSustainable ? t('zoneDeficit') : (hourlyBurnRatePct < 5 ? t('zoneSurplus') : t('zoneBalanced')));
-    const zoneColor = quotaRemPct === 0 ? '#f43f5e' : (!isSustainable ? '#f59e0b' : '#10b981');
-    const forecastTitle = !isSustainable 
-      ? t('forecastDeficit', { hours: deficitHours })
-      : (surplusHours > 0 ? t('forecastSustainableSurplus', { hours: surplusHours }) : t('forecastSustainable'));
+    if (validCount === 0) {
+      const primaryGroup = isClaudeActive ? (claudeGroup || geminiGroup) : (geminiGroup || claudeGroup);
+      const weekly = primaryGroup?.weeklyBucket;
+      const rem = weekly ? weekly.remainingPercentage : 100;
+      const resetMs = weekly ? weekly.resetTimeMs : (now + 168 * 3600 * 1000);
+      const timeRem = Math.max(0.1, (resetMs - now) / (1000 * 3600));
+      const timeElapsed = Math.max(0.5, 168 - timeRem);
+      const used = Math.max(0, 100 - rem);
+      totalBurnRate = used > 0.5 ? (used / timeElapsed) : 0;
+      totalQuotaRem = rem;
+      totalTimeRemHours = timeRem;
+      validCount = 1;
+    }
+
+    const fleetAvgBurnRate = totalBurnRate / validCount;
+    const fleetAvgQuotaRem = totalQuotaRem / validCount;
+    const fleetAvgTimeRem = totalTimeRemHours / validCount;
+    const fleetTimeRemPct = Math.max(1, Math.min(100, Math.round((fleetAvgTimeRem / 168) * 100)));
+
+    let fleetRunwayHours = 999;
+    if (fleetAvgBurnRate > 0.005) {
+      fleetRunwayHours = fleetAvgQuotaRem / fleetAvgBurnRate;
+    }
+
+    const sustainabilityRatio = fleetAvgTimeRem > 0 ? (fleetRunwayHours / fleetAvgTimeRem) : 1.0;
+
+    let zoneLabel = t('zoneSafe');
+    let zoneColor = '#10b981'; // Green
+    if (fleetAvgQuotaRem === 0 || sustainabilityRatio < 0.5) {
+      zoneLabel = t('zoneCritical');
+      zoneColor = '#f43f5e'; // Red
+    } else if (sustainabilityRatio < 0.85) {
+      zoneLabel = t('zoneDeficit');
+      zoneColor = '#f59e0b'; // Amber
+    } else if (sustainabilityRatio <= 1.15) {
+      zoneLabel = t('zoneBalanced');
+      zoneColor = '#38bdf8'; // Sky Blue
+    } else {
+      zoneLabel = `${Math.min(9.9, Math.max(1.0, sustainabilityRatio)).toFixed(2)}x ${t('zoneSafe')}`;
+      zoneColor = '#10b981'; // Green
+    }
 
     const renderQuotaCard = (group: QuotaGroup, cardIdx: number) => {
       const isGemini = group.displayName.toLowerCase().includes('gemini');
@@ -4066,7 +4127,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         </button>
       </div>
 
-      <!-- Quota Consumption & Runway Forecast Card -->
+      <!-- Quota Consumption & Runway Forecast Card (Minimal & Fleet-Wide) -->
       <div class="velocity-forecast-card">
         <div class="velocity-top">
           <div class="velocity-title-row">
@@ -4080,20 +4141,16 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         <div class="velocity-body">
           <div class="velocity-metric-pill">
             <span class="v-label">${t('burnRateLabel')}</span>
-            <span class="v-value">${hourlyBurnRatePct.toFixed(1)}% <span class="v-unit">${t('perHourSuffix')}</span></span>
+            <span class="v-value">${fleetAvgBurnRate.toFixed(2)}% <span class="v-unit">${t('perHourSuffix')}</span></span>
           </div>
           <div class="velocity-metric-pill">
             <span class="v-label">${t('runwayLabel')}</span>
-            <span class="v-value">${runwayHours > 168 ? t('moreThan7Days') : `${runwayHours.toFixed(1)}h`}</span>
+            <span class="v-value">${fleetRunwayHours > 168 ? t('moreThan7Days') : `${Math.round(fleetRunwayHours)}h`}</span>
           </div>
           <div class="velocity-metric-pill">
             <span class="v-label">${t('sessionResetLabel')}</span>
-            <span class="v-value">${active5h?.resetTimeFormatted?.replace(/\s*\d+s$/, '') || '04h 00m'}</span>
+            <span class="v-value">${Math.round(fleetAvgTimeRem)}h <span class="v-unit">(${fleetTimeRemPct}%)</span></span>
           </div>
-        </div>
-        <div class="velocity-footer">
-          <span class="velocity-status-dot" style="background: ${zoneColor};"></span>
-          <span class="velocity-desc">${forecastTitle}</span>
         </div>
       </div>
 
