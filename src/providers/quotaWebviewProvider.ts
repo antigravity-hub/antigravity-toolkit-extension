@@ -567,6 +567,31 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       };
     }
 
+    // Quota Consumption & Runway Forecast Calculations
+    const primaryGroup = isClaudeActive ? (claudeGroup || geminiGroup) : (geminiGroup || claudeGroup);
+    const active5h = primaryGroup?.fiveHourBucket;
+    const activeWeekly = primaryGroup?.weeklyBucket;
+    const quotaRemPct = active5h ? active5h.remainingPercentage : 100;
+    const sessionResetMs = active5h ? active5h.resetTimeMs : defaultReset;
+    const sessionTimeRemHours = Math.max(0.1, (sessionResetMs - now) / (1000 * 3600));
+    const sessionTimeElapsedHours = Math.max(0.1, 5 - sessionTimeRemHours);
+    const sessionUsedPct = Math.max(0, 100 - quotaRemPct);
+    const hourlyBurnRatePct = sessionTimeElapsedHours > 0.05 ? (sessionUsedPct / sessionTimeElapsedHours) : 0;
+
+    let runwayHours = 168;
+    if (hourlyBurnRatePct > 0.05) {
+      runwayHours = quotaRemPct / hourlyBurnRatePct;
+    }
+    const isSustainable = runwayHours >= sessionTimeRemHours;
+    const surplusHours = Math.max(0, Math.round(runwayHours - sessionTimeRemHours));
+    const deficitHours = Math.max(0, Math.round(sessionTimeRemHours - runwayHours));
+
+    const zoneLabel = quotaRemPct === 0 ? 'CRITICAL' : (!isSustainable ? 'DEFICIT' : (hourlyBurnRatePct < 5 ? 'SURPLUS' : 'BALANCED'));
+    const zoneColor = quotaRemPct === 0 ? '#f43f5e' : (!isSustainable ? '#f59e0b' : '#10b981');
+    const forecastTitle = !isSustainable 
+      ? `Projected Quota Deficit: ~${deficitHours}h Shortfall` 
+      : (surplusHours > 0 ? `Sustainable Consumption — Quota Safe (+${surplusHours}h)` : `Sustainable Consumption — Quota Safe`);
+
     const renderQuotaCard = (group: QuotaGroup, cardIdx: number) => {
       const isGemini = group.displayName.toLowerCase().includes('gemini');
       const fiveHour = group.fiveHourBucket || {
@@ -1529,6 +1554,98 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
       background: var(--badge-neutral-bg);
       border: 1px solid var(--badge-neutral-border);
       color: var(--badge-neutral-text);
+    }
+
+    /* Quota Consumption & Runway Forecast Card */
+    .velocity-forecast-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin-top: 10px;
+      margin-bottom: 10px;
+      box-shadow: var(--card-shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .velocity-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .velocity-title-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .velocity-icon {
+      font-size: 13px;
+    }
+    .velocity-title {
+      font-size: 10.5px;
+      font-weight: 700;
+      color: var(--text-primary);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .velocity-zone-badge {
+      font-size: 9px;
+      font-weight: 800;
+      padding: 2px 7px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .velocity-body {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+    .velocity-metric-pill {
+      background: var(--badge-neutral-bg);
+      border: 1px solid var(--badge-neutral-border);
+      border-radius: 8px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .v-label {
+      font-size: 8.5px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .v-value {
+      font-size: 11.5px;
+      font-weight: 700;
+      color: var(--text-primary);
+      font-family: var(--vscode-editor-font-family, monospace);
+    }
+    .v-unit {
+      font-size: 8.5px;
+      font-weight: normal;
+      color: var(--text-muted);
+    }
+    .velocity-footer {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding-top: 5px;
+      border-top: 1px solid var(--card-border);
+      font-size: 10px;
+    }
+    .velocity-status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .velocity-desc {
+      font-size: 10px;
+      color: var(--text-secondary);
+      font-weight: 500;
     }
 
     /* Auto-Rotate Bar */
@@ -3947,6 +4064,37 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         <button class="btn-toggle-auto" onclick="toggleAutoSwitch()">
           ${isAutoOn ? 'ON ⚡' : 'OFF'}
         </button>
+      </div>
+
+      <!-- Quota Consumption & Runway Forecast Card -->
+      <div class="velocity-forecast-card">
+        <div class="velocity-top">
+          <div class="velocity-title-row">
+            <span class="velocity-icon">⚡</span>
+            <span class="velocity-title">Quota Consumption & Runway Forecast</span>
+          </div>
+          <span class="velocity-zone-badge" style="background: ${zoneColor}22; color: ${zoneColor}; border: 1px solid ${zoneColor}44;">
+            ${zoneLabel}
+          </span>
+        </div>
+        <div class="velocity-body">
+          <div class="velocity-metric-pill">
+            <span class="v-label">Burn Rate</span>
+            <span class="v-value">${hourlyBurnRatePct.toFixed(1)}% <span class="v-unit">/ hr</span></span>
+          </div>
+          <div class="velocity-metric-pill">
+            <span class="v-label">Runway</span>
+            <span class="v-value">${runwayHours > 168 ? '> 7 Days' : `${runwayHours.toFixed(1)}h`}</span>
+          </div>
+          <div class="velocity-metric-pill">
+            <span class="v-label">Session Reset</span>
+            <span class="v-value">${active5h?.resetTimeFormatted?.replace(/\s*\d+s$/, '') || '04h 00m'}</span>
+          </div>
+        </div>
+        <div class="velocity-footer">
+          <span class="velocity-status-dot" style="background: ${zoneColor};"></span>
+          <span class="velocity-desc">${forecastTitle}</span>
+        </div>
       </div>
 
       <!-- Simplified Quota Groups (Gemini & Claude) -->
