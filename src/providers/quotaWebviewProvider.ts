@@ -586,11 +586,11 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
     const surplusHours = Math.max(0, Math.round(runwayHours - sessionTimeRemHours));
     const deficitHours = Math.max(0, Math.round(sessionTimeRemHours - runwayHours));
 
-    const zoneLabel = quotaRemPct === 0 ? 'CRITICAL' : (!isSustainable ? 'DEFICIT' : (hourlyBurnRatePct < 5 ? 'SURPLUS' : 'BALANCED'));
+    const zoneLabel = quotaRemPct === 0 ? t('zoneCritical') : (!isSustainable ? t('zoneDeficit') : (hourlyBurnRatePct < 5 ? t('zoneSurplus') : t('zoneBalanced')));
     const zoneColor = quotaRemPct === 0 ? '#f43f5e' : (!isSustainable ? '#f59e0b' : '#10b981');
     const forecastTitle = !isSustainable 
-      ? `Projected Quota Deficit: ~${deficitHours}h Shortfall` 
-      : (surplusHours > 0 ? `Sustainable Consumption — Quota Safe (+${surplusHours}h)` : `Sustainable Consumption — Quota Safe`);
+      ? t('forecastDeficit', { hours: deficitHours })
+      : (surplusHours > 0 ? t('forecastSustainableSurplus', { hours: surplusHours }) : t('forecastSustainable'));
 
     const renderQuotaCard = (group: QuotaGroup, cardIdx: number) => {
       const isGemini = group.displayName.toLowerCase().includes('gemini');
@@ -4071,7 +4071,7 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         <div class="velocity-top">
           <div class="velocity-title-row">
             <span class="velocity-icon">⚡</span>
-            <span class="velocity-title">Quota Consumption & Runway Forecast</span>
+            <span class="velocity-title">${t('forecastCardTitle')}</span>
           </div>
           <span class="velocity-zone-badge" style="background: ${zoneColor}22; color: ${zoneColor}; border: 1px solid ${zoneColor}44;">
             ${zoneLabel}
@@ -4079,15 +4079,15 @@ export class QuotaWebviewProvider implements vscode.WebviewViewProvider {
         </div>
         <div class="velocity-body">
           <div class="velocity-metric-pill">
-            <span class="v-label">Burn Rate</span>
-            <span class="v-value">${hourlyBurnRatePct.toFixed(1)}% <span class="v-unit">/ hr</span></span>
+            <span class="v-label">${t('burnRateLabel')}</span>
+            <span class="v-value">${hourlyBurnRatePct.toFixed(1)}% <span class="v-unit">${t('perHourSuffix')}</span></span>
           </div>
           <div class="velocity-metric-pill">
-            <span class="v-label">Runway</span>
-            <span class="v-value">${runwayHours > 168 ? '> 7 Days' : `${runwayHours.toFixed(1)}h`}</span>
+            <span class="v-label">${t('runwayLabel')}</span>
+            <span class="v-value">${runwayHours > 168 ? t('moreThan7Days') : `${runwayHours.toFixed(1)}h`}</span>
           </div>
           <div class="velocity-metric-pill">
-            <span class="v-label">Session Reset</span>
+            <span class="v-label">${t('sessionResetLabel')}</span>
             <span class="v-value">${active5h?.resetTimeFormatted?.replace(/\s*\d+s$/, '') || '04h 00m'}</span>
           </div>
         </div>
