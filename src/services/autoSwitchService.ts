@@ -174,13 +174,13 @@ export class AutoSwitchService {
 
       // Proactive Quota Probe:
       // Keep quota sync alive from Shield during active IDE usage.
-      // Skip if account is disabled or blocked in Shield to prevent hammering with dead requests.
+      // In danger zone (<= 25%), probe aggressively every 15s to keep up with fast-burning agents.
       const isUsable = this.accountService.isAccountUsable(activeAccount);
       if (isUsable) {
-        // Base interval: 45s for danger zone (<= 25%), 120s for normal (> 25%)
-        const baseIntervalMs = activeHealth > 0 && activeHealth <= 25 ? 45000 : 120000;
-        // Exponential backoff if probes fail (multiplier up to 5x: 45s -> 67s -> 101s -> 151s -> 225s)
-        const backoffMultiplier = Math.min(5, Math.pow(1.5, this.consecutiveProbeFailures));
+        // Base interval: 15s for danger zone (<= 25%), 60s for normal (> 25%)
+        const baseIntervalMs = activeHealth > 0 && activeHealth <= 25 ? 15000 : 60000;
+        // Exponential backoff if probes fail (multiplier up to 3x: 15s -> 22s -> 33s -> 45s)
+        const backoffMultiplier = Math.min(3, Math.pow(1.5, this.consecutiveProbeFailures));
         const probeIntervalMs = Math.round(baseIntervalMs * backoffMultiplier);
 
         if (now - this.lastProactiveProbeTimestamp >= probeIntervalMs) {
@@ -215,6 +215,13 @@ export class AutoSwitchService {
             if (remaining <= threshold) {
               isCritical = true;
               criticalReason = `${q.displayName} quota exhausted (${remaining}% left)`;
+              break;
+            }
+
+            // Weekly window quota depletion guard (rotate earlier to avoid hard lockouts)
+            if (q.windowType === 'weekly' && remaining <= Math.max(threshold, 8)) {
+              isCritical = true;
+              criticalReason = `${q.displayName} weekly limit nearly exhausted (${remaining}% left)`;
               break;
             }
 
@@ -366,19 +373,31 @@ export class AutoSwitchService {
       if (!fs.existsSync(transcriptPath)) return null;
 
       const stat = fs.statSync(transcriptPath);
-      // Only check if modified in the last 60 seconds
-      if (Date.now() - stat.mtimeMs > 60000) return null;
+      // Check if modified in the last 120 seconds
+      if (Date.now() - stat.mtimeMs > 120000) return null;
 
       const fd = fs.openSync(transcriptPath, 'r');
-      const tailSize = Math.min(stat.size, 8192);
+      const tailSize = Math.min(stat.size, 16384);
       const tailBuf = Buffer.alloc(tailSize);
       fs.readSync(fd, tailBuf, 0, tailSize, stat.size - tailSize);
       fs.closeSync(fd);
 
       const tailStr = tailBuf.toString('utf8');
-      if (/individual quota reached/i.test(tailStr)) {
-        const match = tailStr.match(/Individual quota reached[^\n"]*/i);
-        return match ? match[0] : 'Individual quota reached';
+
+      const isQuotaOrRateLimit =
+        /individual quota reached/i.test(tailStr) ||
+        /"error_code"\s*:\s*429/i.test(tailStr) ||
+        /overloaded and may experience intermittent errors/i.test(tailStr) ||
+        /RESOURCE_EXHAUSTED/i.test(tailStr) ||
+        /quota exceeded/i.test(tailStr) ||
+        /rate limit/i.test(tailStr) ||
+        /please upgrade your subscription/i.test(tailStr);
+
+      if (isQuotaOrRateLimit) {
+        const match = tailStr.match(
+          /(?:Individual quota reached[^\n"]*|The model API is currently overloaded[^\n"]*|RESOURCE_EXHAUSTED[^\n"]*|quota exceeded[^\n"]*|rate limit[^\n"]*)/i
+        );
+        return match ? match[0] : 'Model quota or 429 rate-limit detected';
       }
     } catch {}
     return null;

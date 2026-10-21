@@ -403,7 +403,8 @@ export class ShieldBridge {
                   const usage = Math.max(0, 100 - remaining);
                   const resetMs = m.reset_time ? new Date(m.reset_time).getTime() : Date.now() + 5 * 3600 * 1000;
                   const durationMs = Math.max(0, resetMs - Date.now());
-                  const resetFormatted = ShieldBridge.formatPaddedCountdown(durationMs, false);
+                  const isWeekly = durationMs > 24 * 3600 * 1000;
+                  const resetFormatted = ShieldBridge.formatPaddedCountdown(durationMs, isWeekly);
 
                   return {
                     modelId: m.name || m.display_name,
@@ -413,7 +414,7 @@ export class ShieldBridge {
                     totalQuota: 100,
                     resetTimeMs: resetMs,
                     resetTimeFormatted: resetFormatted,
-                    windowType: 'rolling_5h',
+                    windowType: isWeekly ? 'weekly' : 'rolling_5h',
                   };
                 });
               }

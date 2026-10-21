@@ -378,7 +378,7 @@ export class AccountService {
       return 0;
     }
 
-    // 1. Primary: check Gemini quota group (Strictly 5-hour rolling session percentage)
+    // 1. Primary: check Gemini quota group (incorporate both 5-hour rolling session and weekly limit)
     if (account.quotaGroups && account.quotaGroups.length > 0) {
       const geminiGroup = account.quotaGroups.find((g) =>
         g.displayName.toLowerCase().includes('gemini')
@@ -388,47 +388,44 @@ export class AccountService {
           ? geminiGroup.fiveHourBucket.remainingPercentage
           : undefined;
 
-        if (fiveH !== undefined) {
-          return fiveH;
-        }
-
         const weekly = geminiGroup.weeklyBucket && typeof geminiGroup.weeklyBucket.remainingPercentage === 'number'
           ? geminiGroup.weeklyBucket.remainingPercentage
           : undefined;
+
+        if (fiveH !== undefined && weekly !== undefined) {
+          // Account health is bounded by the most constrained bucket (weekly or 5h)
+          return Math.min(fiveH, weekly);
+        }
+        if (fiveH !== undefined) return fiveH;
         if (weekly !== undefined) return weekly;
       }
     }
 
-    // 2. Secondary: check core Gemini models (e.g. Pro, High, Flash 5-hour quotas)
+    // 2. Secondary: check core Gemini models (e.g. Pro, High, Flash quotas)
     if (account.quotas && account.quotas.length > 0) {
-      const q5 = account.quotas.find((q) => q.windowType === 'rolling_5h');
-      if (q5) {
-        return typeof q5.remainingQuota === 'number'
-          ? q5.remainingQuota
-          : Math.max(0, 100 - (q5.usagePercentage || 0));
-      }
-
       const geminiModels = account.quotas.filter((q) =>
         q.modelId.toLowerCase().includes('gemini') || q.displayName.toLowerCase().includes('gemini')
       );
       if (geminiModels.length > 0) {
-        const primary = geminiModels.find((q) =>
-          q.modelId.toLowerCase().includes('pro') || q.displayName.toLowerCase().includes('pro')
-        ) || geminiModels[0];
-
-        return typeof primary.remainingQuota === 'number'
-          ? primary.remainingQuota
-          : Math.max(0, 100 - primary.usagePercentage);
+        // Return minimum remaining quota across primary Gemini models so if Flash is 1%, health is 1%
+        const minGemini = Math.min(
+          ...geminiModels.map((q) =>
+            typeof q.remainingQuota === 'number'
+              ? q.remainingQuota
+              : Math.max(0, 100 - (q.usagePercentage || 0))
+          )
+        );
+        return minGemini;
       }
 
-      const totalRemaining = account.quotas.reduce((sum, q) => {
-        const remaining = typeof q.remainingQuota === 'number'
-          ? q.remainingQuota
-          : Math.max(0, 100 - q.usagePercentage);
-        return sum + remaining;
-      }, 0);
-
-      return Math.round(totalRemaining / account.quotas.length);
+      const minTotal = Math.min(
+        ...account.quotas.map((q) =>
+          typeof q.remainingQuota === 'number'
+            ? q.remainingQuota
+            : Math.max(0, 100 - (q.usagePercentage || 0))
+        )
+      );
+      return minTotal;
     }
 
     return 100;
@@ -457,10 +454,15 @@ export class AccountService {
       healthScore: this.getAccountHealth(account),
     }));
 
-    // Sort descending by health score
+    // Sort descending by health score (highest available healthy quota first)
     scored.sort((a, b) => b.healthScore - a.healthScore);
 
-    // Pick top candidate if healthy (> 5% quota available)
+    // Pick top candidate if healthy (>= 20% quota available for sustained stability)
+    if (scored.length > 0 && scored[0].healthScore >= 20) {
+      return scored[0];
+    }
+
+    // Fallback if all standby accounts are degraded: pick highest candidate with > 5%
     if (scored.length > 0 && scored[0].healthScore > 5) {
       return scored[0];
     }
